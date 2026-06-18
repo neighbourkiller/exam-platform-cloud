@@ -180,8 +180,9 @@
       width="min(420px, calc(100vw - 32px))"
       :close-on-click-modal="false"
       @closed="resetPasswordForm"
+      class="student-custom-dialog"
     >
-      <el-form :model="passwordForm" label-position="top" @submit.prevent="handleChangePassword">
+      <el-form :model="passwordForm" label-position="top" @submit.prevent="handleChangePassword" class="student-custom-form">
         <el-form-item label="当前密码" required>
           <el-input v-model="passwordForm.oldPassword" type="password" show-password placeholder="请输入当前密码" />
         </el-form-item>
@@ -193,8 +194,8 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showPasswordDialog = false">取消</el-button>
-        <el-button type="primary" :loading="changingPassword" @click="handleChangePassword">确认修改</el-button>
+        <button type="button" class="student-btn student-btn--cancel" @click="showPasswordDialog = false">取消</button>
+        <button type="button" class="student-btn student-btn--confirm" :disabled="changingPassword" @click="handleChangePassword">确认修改</button>
       </template>
     </el-dialog>
 
@@ -202,7 +203,7 @@
       v-model="showProfileDialog"
       title="个人资料"
       width="min(460px, calc(100vw - 32px))"
-      class="student-profile-dialog"
+      class="student-custom-dialog"
     >
       <div v-loading="profileLoading" class="student-profile-card">
         <div class="student-profile-card__header">
@@ -232,7 +233,7 @@
         </dl>
       </div>
       <template #footer>
-        <el-button @click="showProfileDialog = false">关闭</el-button>
+        <button type="button" class="student-btn student-btn--cancel" @click="showProfileDialog = false">关闭</button>
       </template>
     </el-dialog>
   </div>
@@ -418,7 +419,7 @@ onBeforeUnmount(() => {
   --student-panel: #fcfaf6;
   --student-panel-strong: #ffffff;
   --student-line: #e5ddd0;
-  --student-text: #2f2d2a;
+  --student-text: #1a1a18;
   --student-muted: #746f68;
   --student-accent: #cf6b4e;
   --student-accent-dark: #9d4830;
@@ -432,7 +433,7 @@ onBeforeUnmount(() => {
   --text-muted: var(--student-muted);
   --shadow-soft: 0 16px 40px rgba(54, 43, 33, 0.07);
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
   min-height: 100vh;
   background: var(--student-bg);
   color: var(--student-text);
@@ -485,14 +486,14 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-height: 42px;
+  min-height: 36px;
   padding: 0 14px 0 16px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   color: var(--student-muted);
   font: inherit;
-  font-size: 15px;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
@@ -728,7 +729,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   flex: 0 0 48px;
-  background: var(--student-text, #2f2d2a);
+  background: var(--student-text, #1a1a18);
   color: var(--student-bg, #f8f5ef);
   font-weight: 700;
 }
@@ -742,7 +743,7 @@ onBeforeUnmount(() => {
 }
 
 .student-profile-card__header strong {
-  color: var(--student-text, #2f2d2a);
+  color: var(--student-text, #1a1a18);
   font-size: 18px;
 }
 
@@ -779,7 +780,7 @@ onBeforeUnmount(() => {
 .student-profile-details dd {
   min-width: 0;
   margin: 0;
-  color: var(--student-text, #2f2d2a);
+  color: var(--student-text, #1a1a18);
   font-size: 14px;
   font-weight: 650;
   overflow: hidden;
@@ -809,7 +810,7 @@ onBeforeUnmount(() => {
 .student-content-wrapper {
   width: min(1200px, calc(100% - 64px));
   margin: 0 auto;
-  padding: 28px 0 56px;
+  padding: 48px 0 64px;
 }
 
 .top-nav {
@@ -1016,5 +1017,101 @@ onBeforeUnmount(() => {
   .content-wrapper {
     padding: 16px;
   }
+}
+</style>
+
+<style>
+/* Premium dialog styling for student views */
+.student-custom-dialog {
+  border-radius: 20px !important;
+  background: #ffffff !important;
+  box-shadow: rgba(0, 0, 0, 0.08) 0px 10px 40px 0px, rgba(30, 28, 25, 0.15) 0px 0px 0px 0.5px !important;
+}
+
+.student-custom-dialog .el-dialog__header {
+  padding: 24px 28px 10px;
+  margin-right: 0;
+  border-bottom: none;
+}
+
+.student-custom-dialog .el-dialog__title {
+  font-weight: 700;
+  font-size: 20px;
+  color: #1a1a18;
+}
+
+.student-custom-dialog .el-dialog__body {
+  padding: 16px 28px 24px;
+}
+
+.student-custom-dialog .el-dialog__footer {
+  padding: 16px 28px 24px;
+  border-top: 1px solid rgba(0,0,0,0.04);
+}
+
+.student-custom-form .el-form-item__label {
+  font-weight: 600;
+  color: #1a1a18;
+  padding-bottom: 6px;
+}
+
+.student-custom-form .el-input__wrapper {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: rgba(0, 0, 0, 0.02) 0px 2px 8px 0px, rgba(30, 28, 25, 0.16) 0px 0px 0px 0.5px !important;
+  padding: 4px 14px;
+  transition: box-shadow 0.2s ease;
+}
+
+.student-custom-form .el-input__wrapper.is-focus {
+  box-shadow: rgba(0, 0, 0, 0.04) 0px 4px 16px 0px, rgba(207, 107, 78, 0.40) 0px 0px 0px 1.5px !important;
+}
+
+.student-custom-form .el-input__inner {
+  color: #1a1a18;
+  height: 38px;
+}
+
+.student-btn {
+  min-width: 86px;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.student-btn--cancel {
+  background: #ffffff;
+  border: 1px solid rgba(47, 45, 42, 0.15);
+  color: #5a4f45;
+  margin-right: 12px;
+}
+
+.student-btn--cancel:hover {
+  background: #f8f8f6;
+  border-color: rgba(47, 45, 42, 0.25);
+  color: #1a1a18;
+}
+
+.student-btn--confirm {
+  background: #cf6b4e;
+  border: 1px solid transparent;
+  color: #ffffff;
+}
+
+.student-btn--confirm:hover:not(:disabled) {
+  background: #b55a40;
+  box-shadow: rgba(207, 107, 78, 0.3) 0px 4px 12px 0px;
+}
+
+.student-btn--confirm:disabled {
+  background: #e2a895;
+  cursor: not-allowed;
 }
 </style>

@@ -21,7 +21,8 @@
           :class="['filter-pill', { 'is-active': filterKey === item.key }]"
           @click="filterKey = item.key"
         >
-          {{ item.label }}
+          <el-icon v-if="item.icon" class="filter-pill-icon"><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
         </button>
       </div>
     </section>
@@ -35,50 +36,63 @@
         <button type="button" class="refresh-action" @click="load">刷新列表</button>
       </div>
 
-      <el-table :data="filteredExams" class="student-table" style="width: 100%;">
-        <el-table-column label="课程" width="170">
-          <template #default="{ row }"><span class="course-name">{{ row.subjectName || '--' }}</span></template>
-        </el-table-column>
-        <el-table-column prop="name" label="名称" />
-        <el-table-column label="开始时间" width="190">
-          <template #default="{ row }"><span class="time-text">{{ formatDateTime(row.startTime) }}</span></template>
-        </el-table-column>
-        <el-table-column label="结束时间" width="190">
-          <template #default="{ row }"><span class="time-text">{{ formatDateTime(row.endTime) }}</span></template>
-        </el-table-column>
-        <el-table-column label="状态" width="120" align="center" header-align="center">
-          <template #default="{ row }">
-            <span :class="['status-chip', statusTone(row.status)]">{{ row.status || '--' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="监考策略" width="110" align="center" header-align="center">
-          <template #default="{ row }">
-            <span class="policy-chip">{{ policyLevelLabel(row.proctoringLevel || row.proctoringPolicy?.level) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="已提交" width="90" align="center" header-align="center">
-          <template #default="{ row }">
-            <span :class="['submit-chip', row.submitted ? 'is-submitted' : 'is-pending']">
-              {{ row.submitted ? '是' : '否' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="120" align="center" header-align="center">
-          <template #default="scope">
-            <button
-              :disabled="!canEnter(scope.row)"
-              type="button"
-              class="enter-action"
-              @click="start(scope.row)"
-            >
-              进入考试
-            </button>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <div class="exam-empty">没有匹配的考试</div>
+      <el-skeleton :loading="loading" animated>
+        <template #template>
+          <div style="padding: 10px 0;">
+            <el-skeleton-item variant="rect" style="width: 100%; height: 50px; margin-bottom: 12px; border-radius: 8px" />
+            <el-skeleton-item variant="rect" style="width: 100%; height: 50px; margin-bottom: 12px; border-radius: 8px" />
+            <el-skeleton-item variant="rect" style="width: 100%; height: 50px; border-radius: 8px" />
+          </div>
         </template>
-      </el-table>
+        <template #default>
+          <el-table :data="filteredExams" class="student-table" style="width: 100%;">
+            <el-table-column label="课程" width="170">
+              <template #default="{ row }"><span class="course-name">{{ row.subjectName || '--' }}</span></template>
+            </el-table-column>
+            <el-table-column prop="name" label="名称" />
+            <el-table-column label="开始时间" width="190">
+              <template #default="{ row }"><span class="time-text">{{ formatDateTime(row.startTime) }}</span></template>
+            </el-table-column>
+            <el-table-column label="结束时间" width="190">
+              <template #default="{ row }"><span class="time-text">{{ formatDateTime(row.endTime) }}</span></template>
+            </el-table-column>
+            <el-table-column label="状态" width="120" align="center" header-align="center">
+              <template #default="{ row }">
+                <span :class="['status-chip', statusTone(row.status)]">{{ row.status || '--' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="监考策略" width="110" align="center" header-align="center">
+              <template #default="{ row }">
+                <span class="policy-chip">{{ policyLevelLabel(row.proctoringLevel || row.proctoringPolicy?.level) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="已提交" width="90" align="center" header-align="center">
+              <template #default="{ row }">
+                <span :class="['submit-chip', row.submitted ? 'is-submitted' : 'is-pending']">
+                  {{ row.submitted ? '是' : '否' }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" align="center" header-align="center">
+              <template #default="scope">
+                <button
+                  :disabled="!canEnter(scope.row)"
+                  type="button"
+                  class="enter-action"
+                  @click="start(scope.row)"
+                >
+                  进入考试
+                </button>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <div class="exam-empty">
+                <el-empty description="没有匹配的考试" :image-size="100" />
+              </div>
+            </template>
+          </el-table>
+        </template>
+      </el-skeleton>
     </section>
 
     <PreExamCheckDialog
@@ -91,9 +105,10 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, markRaw } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { Menu, VideoPlay, Timer, CircleCheck, DocumentDelete } from '@element-plus/icons-vue'
 import { studentExamsApi } from '../../api'
 import { formatDateTime, parseDateTime } from '../../utils/datetime'
 import PreExamCheckDialog from './PreExamCheckDialog.vue'
@@ -102,17 +117,18 @@ import { useAuthStore } from '../../stores/auth'
 const router = useRouter()
 const auth = useAuthStore()
 const exams = ref([])
+const loading = ref(true)
 const keyword = ref('')
 const filterKey = ref('all')
 const checkVisible = ref(false)
 const pendingExam = ref(null)
 const disallowedStatuses = new Set(['FINISHED', 'TERMINATED'])
 const filters = [
-  { key: 'all', label: '全部' },
-  { key: 'available', label: '可进入' },
-  { key: 'ongoing', label: '进行中' },
-  { key: 'finished', label: '已结束' },
-  { key: 'unsubmitted', label: '未提交' }
+  { key: 'all', label: '全部', icon: markRaw(Menu) },
+  { key: 'available', label: '可进入', icon: markRaw(VideoPlay) },
+  { key: 'ongoing', label: '进行中', icon: markRaw(Timer) },
+  { key: 'finished', label: '已结束', icon: markRaw(CircleCheck) },
+  { key: 'unsubmitted', label: '未提交', icon: markRaw(DocumentDelete) }
 ]
 const greetingText = computed(() => {
   const hour = new Date().getHours()
@@ -123,7 +139,12 @@ const greetingText = computed(() => {
 })
 
 const load = async () => {
-  exams.value = await studentExamsApi()
+  loading.value = true
+  try {
+    exams.value = await studentExamsApi()
+  } finally {
+    loading.value = false
+  }
 }
 
 const canEnter = (exam) => {
@@ -242,10 +263,19 @@ onMounted(load)
   width: min(560px, 100%);
   margin-top: 28px;
   padding: 14px 22px;
-  border: 1px solid var(--student-line, #e7dfd3);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.76);
-  box-shadow: 0 16px 42px rgba(54, 43, 33, 0.06);
+  border: none;
+  border-radius: 20px;
+  background: #ffffff;
+  box-shadow:
+    rgba(0, 0, 0, 0.06) 0px 4px 20px 0px,
+    rgba(30, 28, 25, 0.22) 0px 0px 0px 0.5px;
+}
+
+.exam-command-panel:focus-within {
+  box-shadow:
+    rgba(0, 0, 0, 0.08) 0px 4px 24px 0px,
+    rgba(207, 107, 78, 0.40) 0px 0px 0px 1px;
+  transition: box-shadow 0.2s ease;
 }
 
 .exam-search {
@@ -279,13 +309,13 @@ onMounted(load)
   align-items: center;
   justify-content: center;
   gap: 8px;
-}
-
-.exam-filters {
   margin-top: 14px;
 }
 
 .filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-height: 34px;
   padding: 0 14px;
   border: 1px solid var(--student-line, #e7dfd3);
@@ -295,20 +325,33 @@ onMounted(load)
   font: inherit;
   font-size: 14px;
   cursor: pointer;
+  transition: all var(--transition-fast, 0.2s);
 }
 
-.filter-pill.is-active,
+.filter-pill-icon {
+  font-size: 16px;
+}
+
 .filter-pill:hover {
   color: var(--text-main);
   background: var(--student-soft, #eee8df);
 }
 
+.filter-pill.is-active {
+  color: var(--text-main);
+  background: var(--student-soft, #eee8df);
+  border-color: rgba(207, 107, 78, 0.35);
+  font-weight: 550;
+}
+
 .exam-panel {
   padding: 26px 28px 24px;
-  border: 1px solid var(--student-line, #e7dfd3);
+  border: none;
   border-radius: 18px;
-  background: #f5efe6;
-  box-shadow: 0 18px 44px rgba(54, 43, 33, 0.045);
+  background: #ffffff;
+  box-shadow:
+    rgba(0, 0, 0, 0.04) 0px 2px 12px 0px,
+    rgba(30, 28, 25, 0.10) 0px 0px 0px 0.5px;
 }
 
 .exam-panel__header {
@@ -471,14 +514,14 @@ onMounted(load)
 
 .enter-action {
   min-width: 86px;
-  height: 32px;
+  height: 28px;
   padding: 0 15px;
-  border: 1px solid #d6c7b6;
-  border-radius: 999px;
-  background: #efe3d7;
+  border: 0.67px solid rgba(47, 45, 42, 0.18);
+  border-radius: 8px;
+  background: transparent;
   color: #5a4f45;
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
