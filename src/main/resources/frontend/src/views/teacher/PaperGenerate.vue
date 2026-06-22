@@ -3,7 +3,7 @@
     <template #header>
       <div class="page-header">
         <div>
-          <div class="header">组卷管理</div>
+          <h1 class="header">组卷管理</h1>
           <p class="header-subtitle">维护试卷模板、手动选题与自动组卷规则</p>
         </div>
         <el-button type="success" size="large" @click="openCreateManualDialog">手动组卷</el-button>
@@ -387,6 +387,7 @@ import {
   updatePaperApi
 } from '../../api'
 import { formatDateTime } from '../../utils/datetime'
+import { questionTypeLabel } from '../../utils/formatters'
 
 const AUTO_DIFFICULTY_ALL = 'ALL'
 const DEFAULT_AUTO_RULES = [
@@ -450,13 +451,7 @@ const selectedQuestions = ref([])
 
 const manualDialogTitle = computed(() => (manualMode.value === 'edit' ? '修改试卷' : '手动组卷'))
 const selectedQuestionIdSet = computed(() => new Set(selectedQuestions.value.map(item => item.questionId)))
-const questionTypeLabelMap = {
-  SINGLE: '单选题',
-  MULTI: '多选题',
-  JUDGE: '判断题',
-  BLANK: '填空题',
-  SHORT: '简答题'
-}
+
 const manualTypeOrderMap = {
   SINGLE: 1,
   MULTI: 2,
@@ -472,7 +467,7 @@ const previewQuestions = computed(() =>
       ...splitQuestionAssets(question.assets),
       ...question,
       displayOrder: index + 1,
-      typeLabel: questionTypeLabelMap[question.type] || question.type || '未知题型',
+      typeLabel: questionTypeLabel(question.type),
       options: parseQuestionOptions(question.optionsJson),
       previewKey: question.questionId || `${question.sortOrder || index + 1}-${index}`
     }))
@@ -627,7 +622,7 @@ const buildPrintablePaperHtml = (detail) => {
       ...splitQuestionAssets(question.assets),
       ...question,
       displayOrder: index + 1,
-      typeLabel: questionTypeLabelMap[question.type] || question.type || '未知题型',
+      typeLabel: questionTypeLabel(question.type),
       options: parseQuestionOptions(question.optionsJson)
     }))
 
@@ -1180,65 +1175,7 @@ onMounted(async () => {
   text-decoration: underline;
 }
 
-.page-card {
-  border: none;
-  border-radius: 16px;
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.02);
-  background-color: #ffffff;
-}
 
-:deep(.el-card__header) {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.header { 
-  font-size: 20px; 
-  font-weight: 700; 
-  color: #1e293b;
-}
-
-:deep(.el-table) {
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-:deep(.el-table th.el-table__cell) {
-  background-color: #f8fafc;
-  color: #475569;
-  font-weight: 600;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-:deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid #f1f5f9;
-  padding: 12px 0;
-}
-
-:deep(.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell) {
-  background-color: #f8fafc;
-}
-
-:deep(.el-input__wrapper), :deep(.el-select__wrapper) {
-  border-radius: 8px;
-  box-shadow: 0 0 0 1px #e2e8f0 inset;
-  background-color: #f8fafc;
-  transition: all 0.2s ease;
-}
-
-:deep(.el-input__wrapper.is-focus), :deep(.el-select__wrapper.is-focus) {
-  box-shadow: 0 0 0 2px #bfdbfe inset, 0 0 0 1px #3b82f6 inset;
-  background-color: #ffffff;
-}
-
-:deep(.el-button) {
-  border-radius: 8px;
-  font-weight: 500;
-}
-
-:deep(.el-dialog) {
-  border-radius: 16px;
-}
 
 @media (max-width: 900px) {
   .page-header,

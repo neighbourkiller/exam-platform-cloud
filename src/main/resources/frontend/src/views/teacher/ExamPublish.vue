@@ -1,6 +1,6 @@
 <template>
-  <el-card class="page-card">
-    <template #header><div class="header">考试发布</div></template>
+  <el-card class="page-card" v-loading="loading">
+    <template #header><h1 class="header">考试发布</h1></template>
 
     <el-form :model="form" label-width="110px">
       <el-row :gutter="12">
@@ -146,7 +146,7 @@
     <el-divider />
 
     <el-button @click="loadExams">刷新考试列表</el-button>
-    <el-table :data="exams" style="margin-top: 10px">
+    <el-table v-if="exams.length || loading" :data="exams" style="margin-top: 10px">
       <el-table-column prop="examId" label="考试ID" width="120" />
       <el-table-column prop="name" label="名称" />
       <el-table-column label="开始时间" width="190">
@@ -195,6 +195,7 @@
         </template>
       </el-table-column>
     </el-table>
+    <el-empty v-else description="暂无考试，点击上方「创建考试」开始" />
   </el-card>
 </template>
 
@@ -204,6 +205,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { createExamApi, examTeachingClassesApi, publishExamApi, queryPapersApi, teacherExamsApi, terminateExamApi } from '../../api'
 import { addMinutesToDateTime, formatDateTime, normalizeDateTimeToMinute } from '../../utils/datetime'
+
+const loading = ref(false)
 
 const defaultStartTime = normalizeDateTimeToMinute(new Date())
 const router = useRouter()
@@ -343,17 +346,27 @@ watch(
 )
 
 const loadPaperOptions = async () => {
-  const data = await queryPapersApi({
-    pageNum: 1,
-    pageSize: 200,
-    subjectId: null,
-    name: null
-  })
-  paperOptions.value = data.records || []
+  loading.value = true
+  try {
+    const data = await queryPapersApi({
+      pageNum: 1,
+      pageSize: 200,
+      subjectId: null,
+      name: null
+    })
+    paperOptions.value = data.records || []
+  } finally {
+    loading.value = false
+  }
 }
 
 const loadTeachingClasses = async () => {
-  teachingClassOptions.value = await examTeachingClassesApi()
+  loading.value = true
+  try {
+    teachingClassOptions.value = await examTeachingClassesApi()
+  } finally {
+    loading.value = false
+  }
 }
 
 const createExam = async () => {
@@ -405,7 +418,12 @@ const openProctoring = (examId) => {
 }
 
 const loadExams = async () => {
-  exams.value = await teacherExamsApi()
+  loading.value = true
+  try {
+    exams.value = await teacherExamsApi()
+  } finally {
+    loading.value = false
+  }
 }
 
 onMounted(async () => {
@@ -458,65 +476,4 @@ onMounted(async () => {
   color: #64748b;
   font-size: 12px;
 }
-
-.page-card {
-  border: none;
-  border-radius: 16px;
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.02);
-  background-color: #ffffff;
-}
-
-:deep(.el-card__header) {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.header { 
-  font-size: 20px; 
-  font-weight: 700; 
-  color: #1e293b;
-}
-
-:deep(.el-table) {
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-:deep(.el-table th.el-table__cell) {
-  background-color: #f8fafc;
-  color: #475569;
-  font-weight: 600;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-:deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid #f1f5f9;
-  padding: 12px 0;
-}
-
-:deep(.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell) {
-  background-color: #f8fafc;
-}
-
-:deep(.el-input__wrapper), :deep(.el-select__wrapper) {
-  border-radius: 8px;
-  box-shadow: 0 0 0 1px #e2e8f0 inset;
-  background-color: #f8fafc;
-  transition: all 0.2s ease;
-}
-
-:deep(.el-input__wrapper.is-focus), :deep(.el-select__wrapper.is-focus) {
-  box-shadow: 0 0 0 2px #bfdbfe inset, 0 0 0 1px #3b82f6 inset;
-  background-color: #ffffff;
-}
-
-:deep(.el-button) {
-  border-radius: 8px;
-  font-weight: 500;
-}
-
-:deep(.el-dialog) {
-  border-radius: 16px;
-}
-
 </style>

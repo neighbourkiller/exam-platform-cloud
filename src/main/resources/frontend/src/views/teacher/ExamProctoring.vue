@@ -240,130 +240,32 @@
 
     <el-empty v-else description="请选择考试以查看监考信息" />
 
-    <el-drawer v-model="drawerVisible" size="560px" class="proctoring-drawer">
-      <template #header>
-        <div class="drawer-title">
-          <span>学生监考详情</span>
-          <strong v-if="timeline">{{ timeline.studentName }}</strong>
-        </div>
-      </template>
-      <template v-if="timeline">
-        <div v-loading="timelineLoading" class="drawer-content">
-        <div class="timeline-summary">
-          <div class="timeline-pill">
-            <span>学生</span>
-            <strong>{{ timeline.studentName }}</strong>
-          </div>
-          <div class="timeline-pill">
-            <span>风险等级</span>
-            <strong>{{ riskLevelLabel(timeline.riskLevel) }} / {{ timeline.riskScore }}</strong>
-          </div>
-          <div class="timeline-pill">
-            <span>快照状态</span>
-            <strong>{{ timeline.snapshotAlert ? '异常' : '正常' }}</strong>
-          </div>
-          <div class="timeline-pill">
-            <span>处置状态</span>
-            <strong>{{ dispositionLabel(timeline.disposition?.status) }}</strong>
-          </div>
-        </div>
-
-        <div class="timeline-meta">
-          <p>班级：{{ formatClassNames(timeline.classNames) }}</p>
-          <p>累计离屏：{{ formatDuration(timeline.totalOffscreenDurationMs) }}</p>
-          <p>最近服务端同步：{{ formatDateTime(timeline.lastSnapshotTime) }}</p>
-          <p>最长离线：{{ formatDuration(timelineOfflineDurationMs) }}</p>
-          <p>重放事件：{{ timelineHasReplayedEvents ? '存在' : '无' }}</p>
-        </div>
-
-        <div class="disposition-panel">
-          <div class="disposition-panel__header">
-            <div>
-              <h3>处置记录</h3>
-              <p>
-                最近处置：
-                {{ timeline.disposition?.handledByName || '--' }}
-                /
-                {{ formatDateTime(timeline.disposition?.handledAt) }}
-              </p>
-            </div>
-            <el-button type="primary" :loading="dispositionSaving" @click="saveDisposition">保存处置</el-button>
-          </div>
-          <el-form label-position="top" class="disposition-form">
-            <el-form-item label="处置状态">
-              <el-select v-model="dispositionForm.status" style="width: 100%">
-                <el-option
-                  v-for="item in DISPOSITION_OPTIONS"
-                  :key="item.value"
-                  :label="item.label"
-                  :value="item.value"
-                />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="处置备注">
-              <el-input
-                v-model="dispositionForm.remark"
-                type="textarea"
-                :rows="3"
-                maxlength="500"
-                show-word-limit
-                placeholder="记录核查结论、误报原因或后续处理说明"
-              />
-            </el-form-item>
-          </el-form>
-        </div>
-
-        <div class="timeline-stats">
-          <div v-for="item in timeline.eventTypeStats" :key="item.eventType" class="stat-row">
-            <span>{{ formatEventType(item.eventType) }}</span>
-            <strong>{{ item.count }}</strong>
-          </div>
-        </div>
-
-        <div class="timeline-list">
-          <div v-for="event in timeline.events" :key="`${event.eventType}-${event.eventTime}-${event.durationMs}`" class="timeline-item">
-            <div class="timeline-item__head">
-              <strong>{{ formatEventType(event.eventType) }}</strong>
-              <span>{{ formatDateTime(event.eventTime) }}</span>
-            </div>
-            <p class="timeline-item__duration">{{ event.durationMs ? formatDuration(event.durationMs) : '瞬时事件' }}</p>
-            <p v-if="formatEventContext(event)" class="timeline-item__context">{{ formatEventContext(event) }}</p>
-            <div v-if="parseEvidence(event.evidenceJson).length" class="timeline-evidence">
-              <figure
-                v-for="item in parseEvidence(event.evidenceJson)"
-                :key="item.objectKey || item.url"
-                class="timeline-evidence__item"
-              >
-                <el-tag size="small" effect="light">{{ evidenceSourceLabel(item.source) }}</el-tag>
-                <el-image
-                  :src="item.url"
-                  :preview-src-list="parseEvidence(event.evidenceJson).map(evidence => evidence.url)"
-                  fit="cover"
-                  class="timeline-evidence__image"
-                />
-              </figure>
-            </div>
-            <pre v-if="event.payload" class="timeline-item__payload">{{ formatPayload(event.payload) }}</pre>
-          </div>
-          <el-empty v-if="!timeline.events.length" description="暂无学生异常事件" />
-        </div>
-        </div>
-      </template>
-      <template v-else>
-        <div v-loading="timelineLoading" class="drawer-content drawer-content--empty">
-          <el-empty v-if="!timelineLoading" description="学生监考详情加载失败，请重新打开" />
-        </div>
-      </template>
-    </el-drawer>
+    <ProctorTimelineDrawer
+      v-model:visible="drawerVisible"
+      :timeline="timeline"
+      :loading="timelineLoading"
+      :saving="dispositionSaving"
+      :offlineDurationMs="timelineOfflineDurationMs"
+      :hasReplayedEvents="timelineHasReplayedEvents"
+      @save="handleDispositionSave"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { proctoringOverviewApi, proctoringStudentsApi, proctoringTimelineApi, teacherExamsApi, updateProctoringDispositionApi } from '../../api'
+import {
+  proctoringOverviewApi,
+  proctoringStudentsApi,
+  proctoringTimelineApi,
+  teacherExamsApi,
+  updateProctoringDispositionApi
+} from '../../api'
 import { formatDateTime } from '../../utils/datetime'
+import { riskLevelLabel, formatClassNames, formatDuration } from '../../utils/proctorUtils'
+import ProctorTimelineDrawer from './components/ProctorTimelineDrawer.vue'
 
 const LIVE_STATUSES = new Set(['PUBLISHED', 'ONGOING'])
 const REPORT_STATUSES = new Set(['FINISHED', 'TERMINATED'])
@@ -385,10 +287,6 @@ const riskFilter = ref('')
 const dispositionFilter = ref('')
 const keyword = ref('')
 const dispositionSaving = ref(false)
-const dispositionForm = reactive({
-  status: 'PENDING_REVIEW',
-  remark: ''
-})
 
 let refreshTimer = null
 let timelineLoadSeq = 0
@@ -434,20 +332,14 @@ const filteredStudents = computed(() =>
 const highRiskStudents = computed(() => students.value.filter((item) => item.riskLevel === 'HIGH'))
 const longOffscreenStudents = computed(() => students.value.filter((item) => item.longOffscreen))
 const snapshotAlertStudents = computed(() => students.value.filter((item) => item.snapshotAlert))
-const onlineRate = computed(() => {
-  const total = Number(overview.value?.totalStudents || 0)
-  if (!total) {
-    return 0
-  }
-  return Math.round((Number(overview.value?.answeringStudents || 0) / total) * 100)
-})
+
 const timelineHasReplayedEvents = computed(() =>
-  Boolean(timeline.value?.events?.some((event) => parsePayloadObject(event.payload)?.replayed))
+  Boolean(timeline.value?.events?.some((event) => event.replayed))
 )
 const timelineOfflineDurationMs = computed(() => {
   const durations = timeline.value?.events
     ?.filter((event) => event.eventType === 'NETWORK_OFFLINE')
-    ?.map((event) => Number(event.durationMs || parsePayloadObject(event.payload)?.offlineDurationMs || 0))
+    ?.map((event) => Number(event.durationMs || 0))
     ?.filter((value) => Number.isFinite(value) && value > 0) || []
   return durations.length ? Math.max(...durations) : 0
 })
@@ -515,13 +407,6 @@ const riskTagType = (level) => {
   return 'success'
 }
 
-const riskLevelLabel = (level) => {
-  if (level === 'HIGH') return '高风险'
-  if (level === 'MEDIUM') return '中风险'
-  if (level === 'LOW') return '低风险'
-  return level || '--'
-}
-
 const riskProgressStatus = (level) => {
   if (level === 'HIGH') return 'exception'
   if (level === 'MEDIUM') return 'warning'
@@ -542,97 +427,6 @@ const studentRowClassName = ({ row }) => {
   if (row.riskLevel === 'HIGH') return 'student-row--high'
   if (row.riskLevel === 'MEDIUM') return 'student-row--medium'
   return ''
-}
-
-const formatClassNames = (value) => (Array.isArray(value) && value.length ? value.join('、') : '--')
-
-const formatDuration = (durationMs) => {
-  if (!durationMs || durationMs <= 0) {
-    return '0秒'
-  }
-  const totalSeconds = Math.ceil(durationMs / 1000)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  if (!minutes) {
-    return `${seconds}秒`
-  }
-  return `${minutes}分${seconds}秒`
-}
-
-const parsePayloadObject = (payload) => {
-  if (!payload) {
-    return null
-  }
-  try {
-    const parsed = JSON.parse(payload)
-    return parsed && typeof parsed === 'object' ? parsed : null
-  } catch {
-    return null
-  }
-}
-
-const formatPayload = (payload) => {
-  if (!payload) {
-    return ''
-  }
-  try {
-    return JSON.stringify(JSON.parse(payload), null, 2)
-  } catch {
-    return payload
-  }
-}
-
-const formatPayloadTime = (value) => {
-  if (!value) {
-    return ''
-  }
-  const numberValue = Number(value)
-  if (Number.isFinite(numberValue) && numberValue > 0) {
-    return formatDateTime(new Date(numberValue).toISOString())
-  }
-  return formatDateTime(value)
-}
-
-const formatEventContext = (event) => {
-  const payload = parsePayloadObject(event.payload)
-  if (!payload) {
-    return ''
-  }
-  const parts = []
-  if (payload.replayed) {
-    parts.push('恢复联网后重放')
-  }
-  if (payload.occurredAt) {
-    parts.push(`原始发生：${formatPayloadTime(payload.occurredAt)}`)
-  }
-  const offlineDurationMs = Number(payload.offlineDurationMs || 0)
-  if (Number.isFinite(offlineDurationMs) && offlineDurationMs > 0) {
-    parts.push(`离线约 ${formatDuration(offlineDurationMs)}`)
-  }
-  if (event.eventType === 'NETWORK_OFFLINE' && event.durationMs) {
-    parts.push(`断线 ${formatDuration(event.durationMs)}`)
-  }
-  return parts.join('，')
-}
-
-const parseEvidence = (evidenceJson) => {
-  if (!evidenceJson) {
-    return []
-  }
-  try {
-    const parsed = JSON.parse(evidenceJson)
-    return Array.isArray(parsed)
-      ? parsed.filter((item) => item?.url)
-      : []
-  } catch {
-    return []
-  }
-}
-
-const evidenceSourceLabel = (source) => {
-  if (source === 'SCREEN') return '屏幕截图'
-  if (source === 'CAMERA') return '摄像头画面'
-  return source || '证据图片'
 }
 
 const syncRouteQuery = () => {
@@ -717,49 +511,7 @@ const refreshAll = async () => {
   startPollingIfNeeded()
 }
 
-const hydrateDispositionForm = () => {
-  dispositionForm.status = timeline.value?.disposition?.status || 'PENDING_REVIEW'
-  dispositionForm.remark = timeline.value?.disposition?.remark || ''
-}
-
-const resetTimelineState = () => {
-  timeline.value = null
-  hydrateDispositionForm()
-}
-
-const loadTimeline = async (studentId, loadSeq = timelineLoadSeq) => {
-  const data = await proctoringTimelineApi(selectedExamId.value, studentId)
-  if (loadSeq !== timelineLoadSeq) {
-    return false
-  }
-  timeline.value = data
-  hydrateDispositionForm()
-  return true
-}
-
-const openTimeline = async (row) => {
-  if (!selectedExamId.value) {
-    return
-  }
-  const loadSeq = ++timelineLoadSeq
-  drawerVisible.value = true
-  timelineLoading.value = true
-  resetTimelineState()
-  try {
-    await loadTimeline(row.studentId, loadSeq)
-  } catch (error) {
-    if (loadSeq === timelineLoadSeq) {
-      resetTimelineState()
-      ElMessage.error(error?.message || '加载学生详情失败')
-    }
-  } finally {
-    if (loadSeq === timelineLoadSeq) {
-      timelineLoading.value = false
-    }
-  }
-}
-
-const saveDisposition = async () => {
+const handleDispositionSave = async (formPayload) => {
   const currentTimeline = timeline.value
   if (!selectedExamId.value || !currentTimeline?.studentId) {
     return
@@ -769,8 +521,8 @@ const saveDisposition = async () => {
   const loadSeq = timelineLoadSeq
   try {
     await updateProctoringDispositionApi(selectedExamId.value, studentId, {
-      status: dispositionForm.status,
-      remark: dispositionForm.remark?.trim() || ''
+      status: formPayload.status,
+      remark: formPayload.remark?.trim() || ''
     })
     ElMessage.success('处置记录已保存')
     await Promise.all([
@@ -784,10 +536,41 @@ const saveDisposition = async () => {
   }
 }
 
+const loadTimeline = async (studentId, loadSeq = timelineLoadSeq) => {
+  const data = await proctoringTimelineApi(selectedExamId.value, studentId)
+  if (loadSeq !== timelineLoadSeq) {
+    return false
+  }
+  timeline.value = data
+  return true
+}
+
+const openTimeline = async (row) => {
+  if (!selectedExamId.value) {
+    return
+  }
+  const loadSeq = ++timelineLoadSeq
+  drawerVisible.value = true
+  timelineLoading.value = true
+  timeline.value = null
+  try {
+    await loadTimeline(row.studentId, loadSeq)
+  } catch (error) {
+    if (loadSeq === timelineLoadSeq) {
+      timeline.value = null
+      ElMessage.error(error?.message || '加载学生详情失败')
+    }
+  } finally {
+    if (loadSeq === timelineLoadSeq) {
+      timelineLoading.value = false
+    }
+  }
+}
+
 watch(activeTab, async () => {
   timelineLoadSeq += 1
   drawerVisible.value = false
-  resetTimelineState()
+  timeline.value = null
   ensureSelectedExam()
   syncRouteQuery()
   await loadDashboard()
@@ -797,7 +580,7 @@ watch(activeTab, async () => {
 watch(selectedExamId, async () => {
   timelineLoadSeq += 1
   drawerVisible.value = false
-  resetTimelineState()
+  timeline.value = null
   syncRouteQuery()
   await loadDashboard()
   startPollingIfNeeded()
@@ -1285,68 +1068,8 @@ onBeforeUnmount(() => {
   }
 }
 
-.page-card {
-  border: none;
-  border-radius: 16px;
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.02);
-  background-color: #ffffff;
-}
-
-:deep(.el-card__header) {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.header { 
-  font-size: 20px; 
-  font-weight: 700; 
-  color: #1e293b;
-}
-
-:deep(.el-table) {
-  border-radius: 12px;
-  overflow: hidden;
-}
-
 :deep(.proctoring-tabs .el-tabs__header) {
   margin-bottom: 0;
-}
-
-:deep(.el-table th.el-table__cell) {
-  background-color: #f8fafc;
-  color: #475569;
-  font-weight: 600;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-:deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid #f1f5f9;
-  padding: 12px 0;
-}
-
-:deep(.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell) {
-  background-color: #f8fafc;
-}
-
-:deep(.el-input__wrapper), :deep(.el-select__wrapper) {
-  border-radius: 8px;
-  box-shadow: 0 0 0 1px #e2e8f0 inset;
-  background-color: #f8fafc;
-  transition: all 0.2s ease;
-}
-
-:deep(.el-input__wrapper.is-focus), :deep(.el-select__wrapper.is-focus) {
-  box-shadow: 0 0 0 2px #bfdbfe inset, 0 0 0 1px #3b82f6 inset;
-  background-color: #ffffff;
-}
-
-:deep(.el-button) {
-  border-radius: 8px;
-  font-weight: 500;
-}
-
-:deep(.el-dialog) {
-  border-radius: 16px;
 }
 
 </style>

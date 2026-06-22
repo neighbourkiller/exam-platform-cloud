@@ -180,7 +180,7 @@
               <span class="chart-tip">展示不同分值区间的学生人数比例</span>
             </div>
           </div>
-          <div ref="distRef" class="echart-view"></div>
+          <div ref="distRef" class="echart-view" role="img" aria-label="成绩段分布柱状图"></div>
         </div>
 
         <div class="chart-container trend-chart">
@@ -190,7 +190,7 @@
               <span class="chart-tip">不同教学班级的横向对比分析</span>
             </div>
           </div>
-          <div ref="trendRef" class="echart-view"></div>
+          <div ref="trendRef" class="echart-view" role="img" aria-label="班级均分对比图"></div>
         </div>
 
         <div class="chart-container wrong-rate-chart full-width">
@@ -208,7 +208,7 @@
               </el-radio-group>
             </div>
           </div>
-          <div ref="wrongRef" class="echart-view wide"></div>
+          <div ref="wrongRef" class="echart-view wide" role="img" aria-label="高频错题榜单横向柱状图"></div>
         </div>
       </section>
     </main>
@@ -726,7 +726,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .analytics-dashboard {
   padding: 24px;
-  background-color: #eef2f6;
+  background-color: var(--bg-main);
   min-height: 100%;
   font-family: "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }

@@ -1,7 +1,7 @@
 <template>
   <el-card class="page-card">
     <template #header>
-      <div class="header">班级管理</div>
+      <h1 class="header">班级管理</h1>
     </template>
 
     <el-row :gutter="16">
@@ -14,6 +14,8 @@
             </div>
           </template>
           <el-table
+            v-if="classes.length || loadingClasses"
+            v-loading="loadingClasses"
             :data="classes"
             highlight-current-row
             row-key="id"
@@ -27,6 +29,7 @@
             </el-table-column>
             <el-table-column prop="studentCount" label="人数" width="80" />
           </el-table>
+          <el-empty v-else description="暂无教学班" />
         </el-card>
       </el-col>
 
@@ -43,7 +46,7 @@
           </template>
 
           <el-empty v-if="!selectedClassId" description="请先选择左侧教学班" />
-          <el-table v-else :data="students">
+          <el-table v-else v-loading="loadingStudents" :data="students">
             <el-table-column prop="id" label="学生ID" width="160" />
             <el-table-column prop="studentNo" label="学号" width="160" />
             <el-table-column prop="username" label="用户名" width="150" />
@@ -112,6 +115,9 @@ const selectedClassId = ref('')
 const students = ref([])
 const selectedCandidateIds = ref([])
 
+const loadingClasses = ref(false)
+const loadingStudents = ref(false)
+
 const candidateDialogVisible = ref(false)
 const candidateRows = ref([])
 const candidateTotal = ref(0)
@@ -126,16 +132,21 @@ const selectedClass = computed(() =>
 )
 
 const loadClasses = async () => {
-  classes.value = await teacherClassesApi()
-  if (!classes.value.length) {
-    selectedClassId.value = ''
-    students.value = []
-    return
+  loadingClasses.value = true
+  try {
+    classes.value = await teacherClassesApi()
+    if (!classes.value.length) {
+      selectedClassId.value = ''
+      students.value = []
+      return
+    }
+    if (!selectedClass.value) {
+      selectedClassId.value = classes.value[0].id
+    }
+    await loadStudents()
+  } finally {
+    loadingClasses.value = false
   }
-  if (!selectedClass.value) {
-    selectedClassId.value = classes.value[0].id
-  }
-  await loadStudents()
 }
 
 const onClassSelect = async (row) => {
@@ -148,7 +159,12 @@ const loadStudents = async () => {
     students.value = []
     return
   }
-  students.value = await teacherClassStudentsApi(selectedClassId.value)
+  loadingStudents.value = true
+  try {
+    students.value = await teacherClassStudentsApi(selectedClassId.value)
+  } finally {
+    loadingStudents.value = false
+  }
 }
 
 const loadCandidates = async () => {
@@ -238,66 +254,5 @@ onMounted(loadClasses)
   display: flex;
   justify-content: flex-end;
 }
-
-.page-card {
-  border: none;
-  border-radius: 16px;
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.02);
-  background-color: #ffffff;
-}
-
-:deep(.el-card__header) {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.header { 
-  font-size: 20px; 
-  font-weight: 700; 
-  color: #1e293b;
-}
-
-:deep(.el-table) {
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-:deep(.el-table th.el-table__cell) {
-  background-color: #f8fafc;
-  color: #475569;
-  font-weight: 600;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-:deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid #f1f5f9;
-  padding: 12px 0;
-}
-
-:deep(.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell) {
-  background-color: #f8fafc;
-}
-
-:deep(.el-input__wrapper), :deep(.el-select__wrapper) {
-  border-radius: 8px;
-  box-shadow: 0 0 0 1px #e2e8f0 inset;
-  background-color: #f8fafc;
-  transition: all 0.2s ease;
-}
-
-:deep(.el-input__wrapper.is-focus), :deep(.el-select__wrapper.is-focus) {
-  box-shadow: 0 0 0 2px #bfdbfe inset, 0 0 0 1px #3b82f6 inset;
-  background-color: #ffffff;
-}
-
-:deep(.el-button) {
-  border-radius: 8px;
-  font-weight: 500;
-}
-
-:deep(.el-dialog) {
-  border-radius: 16px;
-}
-
 </style>
 

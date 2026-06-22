@@ -56,3 +56,61 @@ body {
   opacity: 0;
   transform: translateY(10px);
 }
+
+/* Element-Plus Global Overrides */
+.el-card__header {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.el-table {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.el-table th.el-table__cell {
+  background-color: var(--bg-main) !important;
+  color: var(--text-muted) !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid var(--bg-soft) !important;
+}
+
+.el-table td.el-table__cell {
+  border-bottom: 1px solid var(--bg-soft) !important;
+  padding: 12px 0 !important;
+}
+
+.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
+  background-color: var(--bg-main) !important;
+}
+
+.el-input__wrapper, .el-select__wrapper {
+  border-radius: var(--radius-sm) !important;
+  box-shadow: 0 0 0 1px #e2e8f0 inset !important;
+  background-color: var(--bg-main) !important;
+  transition: all var(--transition-fast) ease !important;
+}
+
+.el-input__wrapper.is-focus, .el-select__wrapper.is-focus {
+  box-shadow: 0 0 0 2px var(--brand-light) inset, 0 0 0 1px var(--brand) inset !important;
+  background-color: var(--bg-card) !important;
+}
+
+.el-button {
+  border-radius: var(--radius-sm) !important;
+  font-weight: 500 !important;
+}
+
+.el-dialog {
+  border-radius: var(--radius-lg) !important;
+}
+
+/* Global Utilities */
+.mb-12 { margin-bottom: 12px; }
+.ml-8 { margin-left: 8px; }
+h1.header { 
+  font-size: 20px; 
+  font-weight: 700; 
+  color: var(--text-main);
+  margin: 0;
+}

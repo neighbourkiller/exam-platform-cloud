@@ -1,7 +1,7 @@
 <template>
   <el-card class="page-card">
     <template #header>
-      <div class="header">题库管理</div>
+      <h1 class="header">题库管理</h1>
     </template>
 
     <el-form :inline="true" :model="query" class="mb-12">
@@ -153,7 +153,7 @@
             :http-request="uploadImage"
             accept="image/*"
           >
-            <el-button type="primary" plain>上传插图</el-button>
+            <el-button type="primary, plain">上传插图</el-button>
           </el-upload>
           <span class="upload-tip">支持 jpg/png/webp，上传后将在下方预览</span>
         </el-form-item>
@@ -345,6 +345,7 @@ import {
   updateQuestionApi,
   uploadQuestionImageApi
 } from '../../api'
+import { questionTypeLabel, difficultyLabel } from '../../utils/formatters'
 
 const tableData = ref([])
 const subjectOptions = ref([])
@@ -398,20 +399,7 @@ const createPreviewQuestionDefaults = () => ({
 const previewQuestion = reactive(createPreviewQuestionDefaults())
 
 const courseLabel = (course) => `${course.id} - ${course.name}`
-const questionTypeLabelMap = {
-  SINGLE: '单选',
-  MULTI: '多选',
-  JUDGE: '判断',
-  BLANK: '填空',
-  SHORT: '简答'
-}
-const questionTypeLabel = (type) => questionTypeLabelMap[type] || type || '-'
-const difficultyLabelMap = {
-  EASY: '简单',
-  MEDIUM: '中等',
-  HARD: '困难'
-}
-const difficultyLabel = (difficulty) => difficultyLabelMap[difficulty] || difficulty || '-'
+
 const normalizeId = (value) => (value === null || value === undefined ? null : String(value))
 const displayValue = (value) => (value === null || value === undefined || value === '' ? '-' : value)
 const normalizeQuestionRecords = (records) =>
@@ -841,8 +829,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-
-
 .mb-12 {
   margin-bottom: 12px;
 }
@@ -1042,66 +1028,6 @@ onMounted(async () => {
 .preview-attachment-item:hover {
   border-color: #93c5fd;
   color: #1d4ed8;
-}
-
-.page-card {
-  border: none;
-  border-radius: 16px;
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.02);
-  background-color: #ffffff;
-}
-
-:deep(.el-card__header) {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.header { 
-  font-size: 20px; 
-  font-weight: 700; 
-  color: #1e293b;
-}
-
-:deep(.el-table) {
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-:deep(.el-table th.el-table__cell) {
-  background-color: #f8fafc;
-  color: #475569;
-  font-weight: 600;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-:deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid #f1f5f9;
-  padding: 12px 0;
-}
-
-:deep(.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell) {
-  background-color: #f8fafc;
-}
-
-:deep(.el-input__wrapper), :deep(.el-select__wrapper) {
-  border-radius: 8px;
-  box-shadow: 0 0 0 1px #e2e8f0 inset;
-  background-color: #f8fafc;
-  transition: all 0.2s ease;
-}
-
-:deep(.el-input__wrapper.is-focus), :deep(.el-select__wrapper.is-focus) {
-  box-shadow: 0 0 0 2px #bfdbfe inset, 0 0 0 1px #3b82f6 inset;
-  background-color: #ffffff;
-}
-
-:deep(.el-button) {
-  border-radius: 8px;
-  font-weight: 500;
-}
-
-:deep(.el-dialog) {
-  border-radius: 16px;
 }
 
 </style>

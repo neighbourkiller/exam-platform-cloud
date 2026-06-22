@@ -74,3 +74,4 @@ resume_page.png
 docs/
 projects/
 .tmp.driveupload/
+.playwright-cli/
