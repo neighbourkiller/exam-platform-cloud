@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: exam-gateway
+  cloud:
+    nacos:
+      server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        namespace: ${NACOS_NAMESPACE:dev}
+        group: EXAM_GROUP
+      config:
+        namespace: ${NACOS_NAMESPACE:dev}
+        group: EXAM_GROUP
+  config:
+    import:
+      - optional:nacos:exam-common.yml?group=EXAM_GROUP&refreshEnabled=true
+      - optional:nacos:exam-gateway.yml?group=EXAM_GROUP&refreshEnabled=true
+server:
+  port: ${SERVER_PORT:16730}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

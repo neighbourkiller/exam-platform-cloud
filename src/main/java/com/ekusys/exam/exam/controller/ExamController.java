@@ -52,6 +52,12 @@ public class ExamController {
         this.examAntiCheatEvidenceService = examAntiCheatEvidenceService;
     }
 
+    /**
+     * 创建考试
+     *
+     * @param request 考试创建请求，包含考试名称、时间、班级等信息
+     * @return 新创建考试的ID
+     */
     @PostMapping
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     @AuditOperation(action = "EXAM_CREATE", targetType = "EXAM", targetId = "#result.data", detail = "#request.name")
@@ -59,6 +65,12 @@ public class ExamController {
         return ApiResponse.ok("创建成功", examService.createExam(request));
     }
 
+    /**
+     * 发布考试
+     *
+     * @param examId 考试ID
+     * @return 操作结果
+     */
     @PostMapping("/{examId}/publish")
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     @AuditOperation(action = "EXAM_PUBLISH", targetType = "EXAM", targetId = "#examId")
@@ -67,6 +79,12 @@ public class ExamController {
         return ApiResponse.ok("发布成功", null);
     }
 
+    /**
+     * 终止考试
+     *
+     * @param examId 考试ID
+     * @return 操作结果
+     */
     @PostMapping("/{examId}/terminate")
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     @AuditOperation(action = "EXAM_TERMINATE", targetType = "EXAM", targetId = "#examId")
@@ -75,36 +93,70 @@ public class ExamController {
         return ApiResponse.ok("终止成功", null);
     }
 
+    /**
+     * 获取学生参加的考试列表
+     *
+     * @return 学生参加的考试视图列表
+     */
     @GetMapping("/student")
     @PreAuthorize("hasRole('STUDENT')")
     public ApiResponse<List<StudentExamView>> studentExams() {
         return ApiResponse.ok(examService.listStudentExams());
     }
 
+    /**
+     * 获取学生考试成绩列表
+     *
+     * @return 学生考试结果视图列表
+     */
     @GetMapping("/student/results")
     @PreAuthorize("hasRole('STUDENT')")
     public ApiResponse<List<StudentExamResultView>> studentResults() {
         return ApiResponse.ok(examService.listStudentExamResults());
     }
 
+    /**
+     * 获取教师管理的考试列表
+     *
+     * @return 教师考试视图列表
+     */
     @GetMapping("/teacher")
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public ApiResponse<List<TeacherExamView>> teacherExams() {
         return ApiResponse.ok(examService.listTeacherExams());
     }
 
+    /**
+     * 获取考试监考概览信息
+     *
+     * @param examId 考试ID
+     * @return 监考概览视图，包含统计信息和异常情况
+     */
     @GetMapping("/{examId}/proctoring/overview")
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public ApiResponse<ProctoringOverviewView> proctoringOverview(@PathVariable Long examId) {
         return ApiResponse.ok(examProctoringService.getOverview(examId));
     }
 
+    /**
+     * 获取考试监考学生列表
+     *
+     * @param examId 考试ID
+     * @return 监考学生视图列表，包含学生状态信息
+     */
     @GetMapping("/{examId}/proctoring/students")
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public ApiResponse<List<ProctoringStudentView>> proctoringStudents(@PathVariable Long examId) {
         return ApiResponse.ok(examProctoringService.listStudents(examId));
     }
 
+    /**
+     * 获取学生考试时间线
+     *
+     * @param examId 考试ID
+     * @param studentId 学生ID
+     * @return 学生考试时间线视图，包含操作记录和时间信息
+     */
     @GetMapping("/{examId}/proctoring/students/{studentId}/timeline")
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public ApiResponse<ProctoringStudentTimelineView> proctoringTimeline(@PathVariable Long examId,
@@ -112,6 +164,14 @@ public class ExamController {
         return ApiResponse.ok(examProctoringService.getStudentTimeline(examId, studentId));
     }
 
+    /**
+     * 更新监考处置记录
+     *
+     * @param examId 考试ID
+     * @param studentId 学生ID
+     * @param request 处置请求，包含处置状态和说明
+     * @return 更新后的处置记录视图
+     */
     @PutMapping("/{examId}/proctoring/students/{studentId}/disposition")
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     @AuditOperation(action = "PROCTORING_DISPOSITION_UPDATE", targetType = "PROCTORING_DISPOSITION",
@@ -122,24 +182,49 @@ public class ExamController {
         return ApiResponse.ok("处置记录已保存", examProctoringService.updateStudentDisposition(examId, studentId, request));
     }
 
+    /**
+     * 获取教师授课班级列表
+     *
+     * @return 教学班选项视图列表
+     */
     @GetMapping("/teaching-classes")
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public ApiResponse<List<TeachingClassOptionView>> teachingClasses() {
         return ApiResponse.ok(examService.listTeachingClasses());
     }
 
+    /**
+     * 学生开始考试
+     *
+     * @param examId 考试ID
+     * @return 开始考试响应，包含试卷信息和时间
+     */
     @PostMapping("/{examId}/start")
     @PreAuthorize("hasRole('STUDENT')")
     public ApiResponse<StartExamResponse> start(@PathVariable Long examId) {
         return ApiResponse.ok(examService.startExam(examId));
     }
 
+    /**
+     * 保存考试快照（自动保存功能）
+     *
+     * @param examId 考试ID
+     * @param request 快照请求，包含学生答案
+     * @return 快照保存确认
+     */
     @PostMapping("/{examId}/snapshot")
     @PreAuthorize("hasRole('STUDENT')")
     public ApiResponse<SnapshotAckView> snapshot(@PathVariable Long examId, @Valid @RequestBody SnapshotRequest request) {
         return ApiResponse.ok("快照已保存", examService.saveSnapshot(examId, request));
     }
 
+    /**
+     * 记录作弊事件
+     *
+     * @param examId 考试ID
+     * @param request 作弊事件请求，包含事件类型和详情
+     * @return 操作结果
+     */
     @PostMapping("/{examId}/anti-cheat-events")
     @PreAuthorize("hasRole('STUDENT')")
     public ApiResponse<Void> antiCheat(@PathVariable Long examId, @Valid @RequestBody AntiCheatEventRequest request) {
@@ -147,6 +232,15 @@ public class ExamController {
         return ApiResponse.ok("记录成功", null);
     }
 
+    /**
+     * 上传作弊证据文件
+     *
+     * @param examId 考试ID
+     * @param file 证据文件（图片/视频）
+     * @param source 证据来源（如摄像头、屏幕录制等）
+     * @param eventType 事件类型
+     * @return 上传成功确认，包含文件URL
+     */
     @PostMapping(value = "/{examId}/anti-cheat-evidence", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasRole('STUDENT')")
     public ApiResponse<AntiCheatEvidenceUploadView> antiCheatEvidence(@PathVariable Long examId,
@@ -156,6 +250,13 @@ public class ExamController {
         return ApiResponse.ok("证据上传成功", examAntiCheatEvidenceService.upload(examId, file, source, eventType));
     }
 
+    /**
+     * 提交考试答卷
+     *
+     * @param examId 考试ID
+     * @param request 提交请求，包含学生答案
+     * @return 提交结果，包含得分和提交时间
+     */
     @PostMapping("/{examId}/submit")
     @PreAuthorize("hasRole('STUDENT')")
     public ApiResponse<SubmitResultView> submit(@PathVariable Long examId, @Valid @RequestBody SubmitExamRequest request) {

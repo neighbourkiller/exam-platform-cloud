@@ -1,0 +1,15 @@
+spring:
+  cloud:
+    gateway:
+      server:
+        webflux:
+          routes:
+            - { id: iam-auth, uri: "lb://exam-iam-service", predicates: ["Path=/api/v1/auth/**"] }
+            - { id: iam-admin, uri: "lb://exam-iam-service", predicates: ["Path=/api/v1/admin/users/**,/api/v1/admin/roles/**"] }
+            - { id: academic, uri: "lb://exam-academic-service", predicates: ["Path=/api/v1/admin/courses/**,/api/v1/admin/teaching-classes/**,/api/v1/teacher/classes/**,/api/v1/exams/teaching-classes"] }
+            - { id: content, uri: "lb://exam-content-service", predicates: ["Path=/api/v1/questions/**,/api/v1/papers/**"] }
+            - { id: reporting-results, uri: "lb://exam-reporting-service", predicates: ["Path=/api/v1/exams/student/results,/api/v1/analytics/**,/api/v1/admin/exam-monitor/**,/api/v1/admin/audit-logs"] }
+            - { id: grading, uri: "lb://exam-grading-service", predicates: ["Path=/api/v1/grading/**"] }
+            - { id: management-publish, uri: "lb://exam-management-service", predicates: ["Path=/api/v1/exams/*/publish,/api/v1/exams/*/terminate,/api/v1/exams/teacher,/api/v1/admin/exam-schedules/**,/api/v1/admin/exams/batch"] }
+            - { id: management-create, uri: "lb://exam-management-service", predicates: ["Path=/api/v1/exams", "Method=POST"] }
+            - { id: runtime, uri: "lb://exam-runtime-service", predicates: ["Path=/api/v1/exams/**"] }

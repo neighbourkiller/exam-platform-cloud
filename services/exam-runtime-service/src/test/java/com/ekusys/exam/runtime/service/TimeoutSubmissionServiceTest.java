@@ -1,0 +1,80 @@
+package com.ekusys.exam.runtime.service;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.ekusys.exam.runtime.messaging.RuntimeOutboxService;
+import com.ekusys.exam.runtime.repository.TimeoutSessionMapper;
+import com.ekusys.exam.runtime.repository.TimeoutSessionRow;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.stream.LongStream;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
+import org.springframework.transaction.support.TransactionTemplate;
+
+class TimeoutSubmissionServiceTest {
+    private TimeoutSessionMapper mapper;
+    private RuntimeOutboxService outbox;
+    private TransactionTemplate transactions;
+    private TimeoutSubmissionService service;
+
+    @BeforeEach
+    void setUp() {
+        mapper = mock(TimeoutSessionMapper.class);
+        outbox = mock(RuntimeOutboxService.class);
+        transactions = mock(TransactionTemplate.class);
+        service = new TimeoutSubmissionService(mapper, outbox, transactions);
+    }
+
+    @Test
+    void processesAtMostOneBatchWhenEveryItemFails() {
+        List<TimeoutSessionRow> rows = LongStream.range(1, 201)
+            .mapToObj(id -> new TimeoutSessionRow(id, 10L, id, LocalDateTime.now()))
+            .toList();
+        when(mapper.findClaimable(0, 1, 200)).thenReturn(rows);
+        when(transactions.execute(any())).thenThrow(new IllegalStateException("database unavailable"));
+
+        assertEquals(0, service.processShard(0, 1));
+
+        verify(mapper, times(1)).findClaimable(0, 1, 200);
+        verify(transactions, times(200)).execute(any());
+    }
+
+    @Test
+    void duplicateClaimDoesNotCreateAnotherSubmission() {
+        TimeoutSessionRow row = new TimeoutSessionRow(1L, 2L, 3L, LocalDateTime.now());
+        when(mapper.claim(1L)).thenReturn(0);
+
+        assertFalse(service.submitOne(row));
+
+        verify(mapper, never()).createSubmission(any(), any(), any());
+        verify(outbox, never()).submissionAccepted(any());
+    }
+
+    @Test
+    void claimedSessionCreatesOutboxBeforeFinalState() {
+        TimeoutSessionRow row = new TimeoutSessionRow(1L, 2L, 3L, LocalDateTime.now());
+        when(mapper.claim(1L)).thenReturn(1);
+        when(mapper.findSubmissionId(2L, 3L)).thenReturn(99L);
+
+        assertTrue(service.submitOne(row));
+
+        InOrder order = inOrder(mapper, outbox);
+        order.verify(mapper).claim(1L);
+        order.verify(mapper).createSubmission(any(), org.mockito.ArgumentMatchers.eq(2L), org.mockito.ArgumentMatchers.eq(3L));
+        order.verify(mapper).findSubmissionId(2L, 3L);
+        order.verify(outbox).submissionAccepted(99L);
+        order.verify(mapper).markSubmitted(1L);
+    }
+}

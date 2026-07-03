@@ -1,0 +1,4 @@
+<configuration>
+    <logger name="com.ekusys.exam.runtime.service.TimeoutSubmissionService" level="OFF"/>
+    <root level="WARN"/>
+</configuration>

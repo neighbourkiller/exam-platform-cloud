@@ -1,0 +1,32 @@
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 1000
+            readTimeout: 3000
+            loggerLevel: basic
+  rabbitmq:
+    host: ${RABBITMQ_HOST:rabbitmq}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:exam}
+    password: ${RABBITMQ_PASSWORD:exam}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+exam:
+  security:
+    jwt:
+      issuer: exam-system
+      public-key: ${JWT_PUBLIC_KEY:}
+      public-key-location: ${JWT_PUBLIC_KEY_LOCATION:}
+    service:
+      enabled: ${SERVICE_AUTH_ENABLED:true}
+      client-id: ${SERVICE_CLIENT_ID:}
+      client-secret: ${SERVICE_CLIENT_SECRET:}
+      token-url: ${SERVICE_TOKEN_URL:http://exam-iam-service/internal/v1/service-tokens}

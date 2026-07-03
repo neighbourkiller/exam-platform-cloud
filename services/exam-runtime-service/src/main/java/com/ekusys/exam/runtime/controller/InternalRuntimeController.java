@@ -1,0 +1,3 @@
+package com.ekusys.exam.runtime.controller;
+import com.ekusys.exam.common.api.ApiResponse; import com.ekusys.exam.runtime.api.GradingSubmissionInput; import com.ekusys.exam.runtime.service.ExamRuntimeService; import org.springframework.web.bind.annotation.*;
+@RestController @RequestMapping("/internal/v1/submissions") public class InternalRuntimeController {private final ExamRuntimeService service;public InternalRuntimeController(ExamRuntimeService service){this.service=service;}@GetMapping("/{id}/grading-input") public ApiResponse<GradingSubmissionInput> input(@PathVariable Long id){return ApiResponse.ok(service.gradingInput(id));}}

@@ -1,0 +1,2 @@
+package com.ekusys.exam.grading.messaging;import org.springframework.amqp.core.*;import org.springframework.context.annotation.*;
+@Configuration public class GradingRabbitConfig{@Bean TopicExchange examEvents(){return new TopicExchange("exam.events",true,false);}@Bean Queue submissionQueue(){return QueueBuilder.durable("exam.grading.submission-accepted").build();}@Bean Binding binding(TopicExchange examEvents,Queue submissionQueue){return BindingBuilder.bind(submissionQueue).to(examEvents).with("SubmissionAccepted");}}
