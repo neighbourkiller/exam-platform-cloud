@@ -2,14 +2,17 @@ package com.ekusys.exam.common.security;
 
 import com.ekusys.exam.repository.entity.User;
 import com.ekusys.exam.repository.mapper.UserMapper;
+import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.Arrays;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
@@ -33,7 +36,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (auth != null && auth.startsWith("Bearer ")) {
             String token = auth.substring(7);
             try {
-                if (!tokenProvider.isAccessToken(token)) {
+                Claims claims = tokenProvider.parseClaims(token);
+                String tokenType = claims.get("typ", String.class);
+                if ("service".equals(tokenType)) {
+                    authenticateService(request, claims);
+                    filterChain.doFilter(request, response);
+                    return;
+                }
+                if (!"access".equals(tokenType)) {
                     SecurityContextHolder.clearContext();
                     filterChain.doFilter(request, response);
                     return;
@@ -53,6 +63,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
         }
         filterChain.doFilter(request, response);
+    }
+
+    private void authenticateService(HttpServletRequest request, Claims claims) {
+        String scope = claims.get("scope", String.class);
+        var authorities = scope == null ? java.util.List.<SimpleGrantedAuthority>of() : Arrays.stream(scope.split(" "))
+            .filter(value -> !value.isBlank())
+            .map(value -> new SimpleGrantedAuthority("SCOPE_" + value))
+            .toList();
+        UsernamePasswordAuthenticationToken authentication =
+            new UsernamePasswordAuthenticationToken(claims.getSubject(), null, authorities);
+        authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
     }
 
     private boolean isCurrentAccessToken(LoginUser loginUser) {

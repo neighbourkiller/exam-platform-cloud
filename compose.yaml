@@ -28,15 +28,18 @@ services:
   redis:
     image: redis:7.4-alpine
     ports: ["16379:6379"]
+    volumes: ["redis-data:/data"]
   rabbitmq:
     image: rabbitmq:4.1-management
     environment: { RABBITMQ_DEFAULT_USER: "${RABBITMQ_USERNAME:-exam}", RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}" }
-    ports: ["15673:5672", "15672:15672"]
+    ports: ["15672:5672", "25672:15672"]
+    volumes: ["rabbitmq-data:/var/lib/rabbitmq"]
   minio:
     image: minio/minio:latest
     command: server /data --console-address :9001
     environment: { MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}", MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}" }
     ports: ["19000:9000", "19001:9001"]
+    volumes: ["minio-data:/data"]
   nacos:
     image: nacos/nacos-server:v3.1.1
     environment:
@@ -47,11 +50,12 @@ services:
       MYSQL_SERVICE_DB_NAME: nacos_config
       MYSQL_SERVICE_USER: exam_nacos
       MYSQL_SERVICE_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+      MYSQL_SERVICE_DB_PARAM: "characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai"
       NACOS_AUTH_ENABLE: "true"
       NACOS_AUTH_IDENTITY_KEY: "${NACOS_AUTH_IDENTITY_KEY:?NACOS_AUTH_IDENTITY_KEY is required}"
       NACOS_AUTH_IDENTITY_VALUE: "${NACOS_AUTH_IDENTITY_VALUE:?NACOS_AUTH_IDENTITY_VALUE is required}"
       NACOS_AUTH_TOKEN: "${NACOS_AUTH_TOKEN:?NACOS_AUTH_TOKEN is required}"
-    ports: ["8848:8848", "9848:9848"]
+    ports: ["18081:8080", "18848:8848", "19848:9848", "19849:9849"]
     depends_on: { mysql: { condition: service_healthy } }
   xxl-job-admin:
     image: xuxueli/xxl-job-admin:3.4.0
@@ -112,7 +116,10 @@ services:
     secrets: [jwt_public_key]
     depends_on: { mysql: { condition: service_healthy }, nacos: { condition: service_started } }
 volumes:
-  mysql-data:
+  mysql-data: { name: mysql-data }
+  redis-data: { name: redis-data }
+  rabbitmq-data: { name: rabbitmq-data }
+  minio-data: { name: minio_exam_data }
 secrets:
   jwt_private_key:
     file: ./deploy/secrets/jwt-private.pem

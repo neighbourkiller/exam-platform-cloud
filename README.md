@@ -1,48 +1,78 @@
 <div align="center">
 
-# EkuExam
+# EkuExam Cloud
 
-**在线考试系统 / Online Exam System**
+**微服务在线考试系统 / Cloud-Native Online Exam System**
 
 [![Java](https://img.shields.io/badge/Java-21-blue?style=flat-square)](https://openjdk.org/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.0.4-green?style=flat-square)](https://spring.io/projects/spring-boot)
+[![Spring Cloud](https://img.shields.io/badge/Spring%20Cloud-2025.1.0-blue?style=flat-square)](https://spring.io/projects/spring-cloud)
 [![Vue.js](https://img.shields.io/badge/Vue.js-3.5-brightgreen?style=flat-square)](https://vuejs.org/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.4-orange?style=flat-square)](https://dev.mysql.com/)
-[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](#)
 
-[Features](#features) | [Tech Stack](#tech-stack) | [Getting Started](#getting-started) | [Architecture](#architecture) | [API Docs](#api-documentation) | [中文](README_zh.md)
+[Features](#features) | [Tech Stack](#tech-stack) | [Architecture](#architecture) | [Getting Started](#getting-started) | [API Docs](#api-documentation) | [中文](README_zh.md)
 
 </div>
 
 ---
 
-A full-stack education exam and grading platform with role-based access control (Admin / Teacher / Student). Covers question bank management, intelligent paper assembly, exam monitoring with anti-cheating, auto-grading, and data analytics.
+EkuExam Cloud is a cloud-native, microservice-based online exam and grading platform with role-based access control (Admin / Teacher / Student). It covers the complete lifecycle of exams, including question bank management, intelligent paper assembly, real-time proctoring with anti-cheating, auto-grading, and comprehensive performance analytics.
 
 ## Features
 
-- **Question Bank** - CRUD for 5 question types (single-choice, multi-choice, true/false, fill-in-the-blank, short-answer) with image upload via MinIO
-- **Smart Paper Assembly** - Manual and auto-generated papers based on subject, difficulty, and question type constraints
-- **Exam Lifecycle** - Create, publish, start, submit, terminate with class-level targeting and scheduling
-- **Real-time Answer Snapshots** - Auto-saves student answers every 30 seconds to Redis, flushed to MySQL on submit or timeout
-- **Anti-cheating Proctoring** - Tab-switch detection, screenshot evidence upload, event logging, and teacher-side disposition workflow
-- **Auto-grading & Manual Grading** - Objective questions graded automatically; subjective answers queued for teacher review with batch scoring
-- **Analytics Dashboard** - Score distribution, class performance trends, wrong-answer analysis, per-student score breakdown with ECharts visualizations
-- **Admin Management** - Bulk import users/classes/courses via CSV/Excel, role assignment, operation audit logs
-- **Rate Limiting & Security** - JWT auth with refresh tokens, login rate limiting (10/min), CSRF-safe cookie-based refresh
+- **Question Bank** - CRUD for 5 question types (single-choice, multi-choice, true/false, fill-in-the-blank, short-answer) with media upload via MinIO.
+- **Smart Paper Assembly** - Manual selection or rule-based auto-generation constrained by subject, difficulty, and question type.
+- **Exam Lifecycle** - Create, schedule, publish, start, submit, and terminate exams with target class control.
+- **Real-time Answer Snapshots** - Saves student progress every 30 seconds to Redis, persisting to MySQL on submission or session expiry.
+- **Anti-cheating Proctoring** - Tab-switch detection, automated webcam screenshot evidence uploads, activity logging, and teacher-side disposition tools.
+- **Grading Engine** - Automated grading for objective questions; subjective answers are routed to a manual grading queue with batch-scoring support.
+- **Analytics Dashboard** - Score distribution, class performance trends, wrong-answer ratios, and per-student score breakdowns visualized with ECharts.
+- **Admin Management** - Bulk import of users/classes/courses via CSV/Excel, role mapping, and detailed operation audit logging.
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Java 21, Spring Boot 4.0.4, Spring Security, Spring Data Redis, Spring AMQP |
-| ORM | MyBatis-Plus 3.5.14 |
-| Frontend | Vue 3.5, Vite 6, Element-Plus 2.9, ECharts 5.6, Pinia 3, Axios |
-| Database | MySQL 8.4, Flyway (schema migration) |
-| Cache | Redis (session snapshots, rate limiting) |
-| Message Queue | RabbitMQ (async submission processing) |
-| Object Storage | MinIO (question images) |
-| API Docs | SpringDoc OpenAPI / Swagger UI |
-| Auth | JWT (jjwt 0.12.7) - 2h access token, 7d refresh token |
+| **Backend** | Java 21, Spring Boot 4.0.4, Spring Cloud 2025.1.0, Spring Cloud Alibaba 2025.1.0.0 |
+| **Gateway & Security** | Spring Cloud Gateway, Spring Security, JWT (jjwt 0.12.7) |
+| **ORM** | MyBatis-Plus 3.5.14 |
+| **Registry & Config** | Nacos v3.1.1 |
+| **Job Scheduling** | XXL-Job v3.4.0 |
+| **Frontend** | Vue 3.5, Vite 6, Element-Plus 2.9, ECharts 5.6, Pinia 3, Axios |
+| **Data & Cache** | MySQL 8.4 (Data isolation per service), Redis 7.4 (Snapshots, rate limiting) |
+| **Message Queue** | RabbitMQ 4.1 (Asynchronous exam submission processing) |
+| **Object Storage** | MinIO (Question images) |
+
+---
+
+## Architecture
+
+The project has been refactored into a Maven multi-module microservice architecture:
+
+```
+exam/
+├── platform/                          # Common Infrastructure Modules
+│   ├── exam-common-core/              # Common utilities, base entities, exceptions, and global configurations
+│   └── exam-common-security/          # Shared Spring Security and JWT authentication mechanisms
+├── apis/                              # Service Feign Client APIs and Shared DTOs
+│   ├── exam-iam-api/
+│   ├── exam-academic-api/
+│   ├── exam-content-api/
+│   ├── exam-management-api/
+│   └── exam-runtime-api/
+├── services/                          # Microservice Applications
+│   ├── exam-gateway/                  # API Gateway (Route routing, CORS, rate limiting) - Ports: 16730
+│   ├── exam-iam-service/              # Identity and Access Management (Auth & Users)
+│   ├── exam-academic-service/         # Academic management (Courses, Classes)
+│   ├── exam-content-service/          # Question bank and exam paper service
+│   ├── exam-management-service/       # Exam arrangements and proctoring
+│   ├── exam-runtime-service/          # Exam taking, snapshots, anti-cheat, and submission
+│   ├── exam-grading-service/          # Objective auto-grading and manual grading queue
+│   └── exam-reporting-service/        # Statistical dashboards and reporting
+└── src/main/resources/frontend/       # Vue 3 Frontend Single Page Application
+```
+
+---
 
 ## Getting Started
 
@@ -50,36 +80,60 @@ A full-stack education exam and grading platform with role-based access control 
 
 - **Java 21** (JDK)
 - **Node.js 18+** and npm
-- **MySQL 8.4**
-- **Docker** (for Redis, RabbitMQ, MinIO)
+- **Docker** and **Docker Compose**
 
-### 1. Start infrastructure services
+### 1. Generate JWT Key Pairs
+
+The authentication service uses asymmetric RS256 JWT tokens. You must generate public/private key pairs before starting the docker services:
+
+On Windows (PowerShell):
+```powershell
+./deploy/generate-dev-secrets.ps1
+```
+
+This generates keys under `deploy/secrets/` which will be mounted to containers via Docker Secrets.
+
+### 2. Start Services via Docker Compose
+
+Run the following command in the project root directory:
 
 ```bash
 docker compose up -d
 ```
 
-This starts Redis (`:16379`), RabbitMQ (`:15673`), and MinIO (`:19000`).
+This starts all infrastructure services and backend microservices:
+- **MySQL 8.4** (`:13306`)
+- **Redis 7.4** (`:16379`)
+- **RabbitMQ 4.1** (`:15673` AMQP, `:15672` Management)
+- **MinIO** (`:19000` API, `:19001` Console)
+- **Nacos 3.1.1** (`:8848` Console)
+- **XXL-Job Admin 3.4.0** (`:18080` Admin console)
+- **Gateway & Microservices** (Gateway listening on `:16730`)
 
-### 2. Set up the database
+> [!IMPORTANT]
+> MySQL initialization scripts in `deploy/mysql/init` will automatically create the required databases (`exam_iam`, `exam_academic`, `exam_content`, `exam_management`, `exam_runtime`, `exam_grading`, `exam_reporting`, `nacos_config`, `xxl_job`) and seed Nacoses configs.
 
-Create the MySQL database and run the initial migration:
+### 3. Initialize Nacos Configurations
 
-```sql
-CREATE DATABASE exam_mvp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+To push local configuration profiles to Nacos:
+
+On Windows (PowerShell):
+```powershell
+./deploy/publish-nacos.ps1
 ```
 
-Schema and seed data are managed by Flyway and applied automatically on first startup.
+### 4. Build and Run Backend Services (Optional for Local Debugging)
 
-### 3. Run the backend
+If you wish to run/debug specific services locally instead of in Docker:
 
-```bash
-./mvnw spring-boot:run
-```
+1. Stop the target Docker container (e.g. `docker compose stop iam-service`).
+2. Build the project:
+   ```bash
+   ./mvnw clean package -DskipTests
+   ```
+3. Run the microservice using your IDE or command line targeting the appropriate service directory.
 
-The API server starts on **http://localhost:16730**.
-
-### 4. Run the frontend
+### 5. Run the Frontend
 
 ```bash
 cd src/main/resources/frontend
@@ -87,9 +141,9 @@ npm install
 npm run dev
 ```
 
-The dev server starts on **http://localhost:5173**.
+The dev server will be available at **http://localhost:5173**, proxying API requests to the gateway at **http://localhost:16730**.
 
-### 5. Log in
+### 6. Default Accounts
 
 | Account | Password | Role |
 |---------|----------|------|
@@ -97,89 +151,25 @@ The dev server starts on **http://localhost:5173**.
 | `teacher1` | `123456` | Teacher |
 | `student1` | `123456` | Student |
 
-> [!NOTE]
-> Default passwords are set in `application-dev.yaml`. Production deployments should override via environment variables (`APP_DEFAULT_PASSWORD`, `DB_PASSWORD`, `JWT_SECRET`).
-
-## Architecture
-
-```
-com.ekusys.exam/
-├── auth/           Authentication (login, register, token refresh)
-├── admin/          User, role, course, class management
-├── exam/           Exam lifecycle, snapshots, anti-cheating
-├── question/       Question bank CRUD
-├── paper/          Test paper management & auto-generation
-├── grading/        Auto-grading & teacher manual scoring
-├── analytics/      Score distribution, trends, wrong-topic analysis
-├── teacher/        Teacher-specific features (class management)
-└── common/         Security, config, exceptions, audit logging
-```
-
-Each module follows `controller/` -> `service/` -> `dto/` structure. Data entities and MyBatis mappers are centralized under `repository/`.
-
-```
-frontend/src/
-├── api/            Axios API clients
-├── views/          Page components (admin/, teacher/, student/, exam/)
-├── components/     Reusable Vue components
-├── stores/         Pinia state management
-├── router/         Vue Router with role-based guards
-├── layout/         Sidebar, header layouts
-└── utils/          Helper functions
-```
-
-### Key design decisions
-
-- **API prefix**: All endpoints under `/api/v1/`
-- **Auth flow**: Access token in `Authorization` header, refresh token in HttpOnly cookie (`exam_refresh_token`)
-- **RBAC**: Three roles enforced via `@PreAuthorize` on backend and router guards on frontend
-- **Schema management**: Flyway migrations in `db/migration/` (V1-V10), dev seeds in `db/dev-seed/` (V1001+)
+---
 
 ## API Documentation
 
-Swagger UI is available when the backend is running:
+When the system is running, Swagger UI / OpenAPI documentation is aggregated and available at the gateway:
 
 **http://localhost:16730/swagger-ui.html**
 
-Key endpoint groups:
-
-| Group | Path | Description |
-|-------|------|-------------|
-| Auth | `/api/v1/auth` | Login, logout, token refresh, password change |
-| Admin | `/api/v1/admin` | User/role/course/class CRUD, bulk imports, audit logs |
-| Exams | `/api/v1/exams` | Exam lifecycle, proctoring, student submissions |
-| Questions | `/api/v1/questions` | Question bank management, image upload |
-| Papers | `/api/v1/papers` | Paper creation, auto-generation |
-| Grading | `/api/v1/grading` | Pending submissions, batch scoring |
-| Analytics | `/api/v1/analytics` | Score stats, trends, wrong-answer analysis |
-| Classes | `/api/v1/teacher/classes` | Teacher class & student management |
-
 ## Environment Variables
 
-All configuration is externalized. Key variables with their defaults:
+Microservices retrieve configurations from Nacos. Key bootstrap variables can be configured in `.env`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SERVER_PORT` | `16730` | Backend server port |
-| `DB_URL` | `jdbc:mysql://127.0.0.1:3306/exam_mvp` | MySQL connection URL |
-| `DB_USERNAME` | `root` | MySQL username |
-| `DB_PASSWORD` | _(empty)_ | MySQL password |
-| `REDIS_HOST` | `127.0.0.1` | Redis host |
-| `REDIS_PORT` | `6379` | Redis port |
-| `RABBITMQ_HOST` | `127.0.0.1` | RabbitMQ host |
-| `RABBITMQ_PORT` | `5672` | RabbitMQ port |
-| `MINIO_ENDPOINT` | `http://127.0.0.1:19000` | MinIO endpoint |
-| `JWT_SECRET` | _(dev-only)_ | JWT signing secret |
-| `APP_DEFAULT_PASSWORD` | `Exam@2026` | Default password for new users |
-
-## Running Tests
-
-```bash
-# All backend tests
-./mvnw test
-
-# Specific test class
-./mvnw test -Dtest=ExamServiceTest
-```
-
-Tests use JUnit 5, Mockito, and Spring Boot Test with `spring-boot-starter-webmvc-test` and `mybatis-spring-boot-starter-test`.
+| `MYSQL_ROOT_PASSWORD` | - | Root password for MySQL container |
+| `EXAM_DB_PASSWORD` | - | Database password for all exam services |
+| `NACOS_PASSWORD` | `nacos` | Nacos console password |
+| `RABBITMQ_PASSWORD` | - | RabbitMQ connection password |
+| `MINIO_ACCESS_KEY` | - | MinIO console access key |
+| `MINIO_SECRET_KEY` | - | MinIO console secret key |
+| `SERVICE_CLIENT_SECRET` | - | Internal Feign client security token |
+| `XXL_JOB_ACCESS_TOKEN` | - | Access token for XXL-Job executor authentication |

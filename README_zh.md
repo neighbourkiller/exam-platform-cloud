@@ -1,85 +1,138 @@
 <div align="center">
 
-# EkuExam
+# EkuExam Cloud
 
-**在线考试系统**
+**微服务在线考试系统 / Cloud-Native Online Exam System**
 
 [![Java](https://img.shields.io/badge/Java-21-blue?style=flat-square)](https://openjdk.org/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.0.4-green?style=flat-square)](https://spring.io/projects/spring-boot)
+[![Spring Cloud](https://img.shields.io/badge/Spring%20Cloud-2025.1.0-blue?style=flat-square)](https://spring.io/projects/spring-cloud)
 [![Vue.js](https://img.shields.io/badge/Vue.js-3.5-brightgreen?style=flat-square)](https://vuejs.org/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.4-orange?style=flat-square)](https://dev.mysql.com/)
-[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](#)
 
-[功能特性](#功能特性) | [技术栈](#技术栈) | [快速开始](#快速开始) | [项目架构](#项目架构) | [接口文档](#接口文档) | [English](README.md)
+[功能特性](#功能特性) | [技术栈](#技术栈) | [项目架构](#项目架构) | [快速开始](#快速开始) | [接口文档](#接口文档) | [English](README.md)
 
 </div>
 
 ---
 
-前后端分离的在线考试与成绩评定平台，支持管理员、教师、学生三种角色，涵盖题库管理、智能组卷、考试监控与防作弊、自动阅卷、数据统计分析等完整业务流程。
+EkuExam Cloud 是一个基于微服务架构的云原生在线考试与成绩评定平台，支持管理员、教师、学生三种角色。系统涵盖题库管理、智能组卷、考试全生命周期管理、实时防作弊监控、自动阅卷以及多维度的成绩统计与数据分析。
 
 ## 功能特性
 
-- **题库管理** - 支持单选、多选、判断、填空、简答五种题型的增删改查，支持通过 MinIO 上传题目图片
-- **智能组卷** - 支持手动组卷和按科目、难度、题型约束自动生成试卷
-- **考试全生命周期** - 创建、发布、开考、交卷、终止，支持按班级分配和定时调度
-- **实时答题快照** - 每 30 秒自动将学生作答保存至 Redis，交卷或超时时刷入 MySQL
-- **防作弊监控** - 切屏检测、截图证据上传、事件日志记录，教师端可进行处置决策
-- **自动阅卷与人工批阅** - 客观题自动评分；主观题进入待批阅队列，支持按题批量评分
-- **数据分析看板** - 成绩分布、班级均分趋势、高频错题分析、学生成绩明细，基于 ECharts 可视化
-- **后台管理** - 支持 CSV/Excel 批量导入用户/班级/课程，角色分配，操作审计日志
-- **安全机制** - JWT 认证 + 刷新令牌、登录频率限制（10 次/分钟）、基于 HttpOnly Cookie 的安全刷新
+- **题库管理** - 支持单选、多选、判断、填空、简答五种题型的增删改查，支持通过 MinIO 上传题目图片或附件。
+- **智能组卷** - 支持手动组卷以及基于科目、难度、题型约束自动生成试卷。
+- **考试全生命周期** - 创建、定时发布、开考、交卷、强制终止，支持按班级分配和定时调度。
+- **实时答题快照** - 每 30 秒自动将学生答题进度保存至 Redis 缓存，交卷或会话超时后安全刷入 MySQL。
+- **防作弊监控** - 包含切屏检测、摄像头抓拍监控、事件日志记录，教师端可进行实时处置与标记。
+- **阅卷引擎** - 客观题自动评分；主观题进入批阅队列，支持教师按题批量评分。
+- **统计看板** - 成绩分布、班级均分趋势、高频错题分析、学生成绩明细，基于 ECharts 实现多维度可视化。
+- **后台管理** - 支持 CSV/Excel 批量导入用户/班级/课程，角色权限映射，操作审计日志记录。
 
 ## 技术栈
 
 | 层级 | 技术 |
 |------|------|
-| 后端 | Java 21, Spring Boot 4.0.4, Spring Security, Spring Data Redis, Spring AMQP |
-| ORM | MyBatis-Plus 3.5.14 |
-| 前端 | Vue 3.5, Vite 6, Element-Plus 2.9, ECharts 5.6, Pinia 3, Axios |
-| 数据库 | MySQL 8.4, Flyway（数据库版本管理） |
-| 缓存 | Redis（答题快照、频率限制） |
-| 消息队列 | RabbitMQ（异步答卷处理） |
-| 对象存储 | MinIO（题目图片） |
-| 接口文档 | SpringDoc OpenAPI / Swagger UI |
-| 认证 | JWT (jjwt 0.12.7) — 访问令牌 2 小时，刷新令牌 7 天 |
+| **后端核心** | Java 21, Spring Boot 4.0.4, Spring Cloud 2025.1.0, Spring Cloud Alibaba 2025.1.0.0 |
+| **网关与安全** | Spring Cloud Gateway, Spring Security, JWT (jjwt 0.12.7) |
+| **持久层** | MyBatis-Plus 3.5.14 |
+| **注册与配置中心** | Nacos v3.1.1 |
+| **分布式调度** | XXL-Job v3.4.0 |
+| **前端** | Vue 3.5, Vite 6, Element-Plus 2.9, ECharts 5.6, Pinia 3, Axios |
+| **数据与缓存** | MySQL 8.4 (各服务数据库隔离), Redis 7.4 (答题快照、限流) |
+| **消息队列** | RabbitMQ 4.1 (异步交卷及判题队列处理) |
+| **对象存储** | MinIO (题目图片与附件存储) |
+
+---
+
+## 项目架构
+
+项目重构为基于 Maven 的多模块微服务架构：
+
+```
+exam/
+├── platform/                          # 公共基础设施模块
+│   ├── exam-common-core/              # 核心工具类、基类、全局异常处理及公共配置
+│   └── exam-common-security/          # 共享的安全拦截与 JWT 认证校验模块
+├── apis/                              # 微服务间 OpenFeign 调用接口定义与 DTO
+│   ├── exam-iam-api/
+│   ├── exam-academic-api/
+│   ├── exam-content-api/
+│   ├── exam-management-api/
+│   └── exam-runtime-api/
+├── services/                          # 微服务应用
+│   ├── exam-gateway/                  # API 网关（路由转发、跨域处理、接口限流）- 端口: 16730
+│   ├── exam-iam-service/              # 统一身份认证与权限管理服务
+│   ├── exam-academic-service/         # 教务管理服务（课程、班级、学生关系）
+│   ├── exam-content-service/          # 题库与试卷服务
+│   ├── exam-management-service/       # 考试安排与监考服务
+│   ├── exam-runtime-service/          # 考试运行时服务（开始考试、答题快照、提交答卷）
+│   ├── exam-grading-service/          # 阅卷判题服务（客观题自动判分、主观题人工批改）
+│   └── exam-reporting-service/        # 数据分析与统计报表服务
+└── src/main/resources/frontend/       # Vue 3 前端单页应用
+```
+
+---
 
 ## 快速开始
 
 ### 环境要求
 
-- **Java 21**（JDK）
+- **Java 21** (JDK)
 - **Node.js 18+** 和 npm
-- **MySQL 8.4**
-- **Docker**（用于 Redis、RabbitMQ、MinIO）
+- **Docker** 与 **Docker Compose**
 
-### 1. 启动基础设施服务
+### 1. 生成 JWT 签名密钥对
+
+统一认证服务采用非对称 RS256 JWT 令牌。在启动 Docker 容器服务之前，必须生成公私钥对：
+
+在 Windows 环境下 (PowerShell):
+```powershell
+./deploy/generate-dev-secrets.ps1
+```
+
+执行后将在 `deploy/secrets/` 下生成密钥文件，并在后续通过 Docker Secrets 机制安全挂载到容器中。
+
+### 2. 使用 Docker Compose 一键启动
+
+在项目根目录下执行以下命令：
 
 ```bash
 docker compose up -d
 ```
 
-将启动 Redis（`:16379`）、RabbitMQ（`:15673`）和 MinIO（`:19000`）。
+该命令将启动所有基础设施和后端微服务：
+- **MySQL 8.4** (`:13306`)
+- **Redis 7.4** (`:16379`)
+- **RabbitMQ 4.1** (`:15673` 协议, `:15672` 管理后台)
+- **MinIO** (`:19000` API, `:19001` 控制台)
+- **Nacos 3.1.1** (`:8848` 注册与配置中心)
+- **XXL-Job Admin 3.4.0** (`:18080` 调度中心后台)
+- **微服务及网关** (网关统一监听 `:16730` 端口)
 
-### 2. 创建数据库
+> [!IMPORTANT]
+> MySQL 容器启动时会自动执行 `deploy/mysql/init` 目录下的 SQL 脚本，自动创建微服务所需的各个数据库（`exam_iam`, `exam_academic`, `exam_content`, `exam_management`, `exam_runtime`, `exam_grading`, `exam_reporting`, `nacos_config`, `xxl_job`）并初始化 Nacos 配置数据。
 
-在 MySQL 中创建数据库：
+### 3. 初始化 Nacos 配置
 
-```sql
-CREATE DATABASE exam_mvp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+本地配置需要推送同步到 Nacos 配置中心，在 Windows (PowerShell) 下运行：
+
+```powershell
+./deploy/publish-nacos.ps1
 ```
 
-数据库 Schema 和初始数据由 Flyway 管理，首次启动时自动执行。
+### 4. 编译与本地调试（可选）
 
-### 3. 启动后端
+如果您希望在本地开发环境调试特定微服务，而不是全部运行在 Docker 中：
 
-```bash
-./mvnw spring-boot:run
-```
+1. 停止对应的 Docker 容器（例如 `docker compose stop iam-service`）。
+2. 构建整个 Maven 项目：
+   ```bash
+   ./mvnw clean package -DskipTests
+   ```
+3. 在 IDE 中导入项目，启动对应的微服务应用启动类。
 
-API 服务启动于 **http://localhost:16730**。
-
-### 4. 启动前端
+### 5. 启动前端
 
 ```bash
 cd src/main/resources/frontend
@@ -87,50 +140,16 @@ npm install
 npm run dev
 ```
 
-开发服务器启动于 **http://localhost:5173**。
+启动后可访问 **http://localhost:5173**。前端会将 API 请求统一代理到网关 **http://localhost:16730**。
 
-### 5. 登录系统
+### 6. 默认登录账户
 
 | 账号 | 密码 | 角色 |
 |------|------|------|
-| `admin` | `123456` | 管理员 |
+| `admin` | `123456` | 系统管理员 |
 | `teacher1` | `123456` | 教师 |
 | `student1` | `123456` | 学生 |
 
-> [!NOTE]
-> 开发环境默认密码配置在 `application-dev.yaml`。生产部署时请通过环境变量覆盖（`APP_DEFAULT_PASSWORD`、`DB_PASSWORD`、`JWT_SECRET`）。
-
-## 项目架构
-
-### 后端模块结构
-
-```
-com.ekusys.exam/
-├── auth/           认证模块（登录、注册、令牌刷新）
-├── admin/          管理模块（用户、角色、课程、班级管理）
-├── exam/           考试模块（考试生命周期、答题快照、防作弊）
-├── question/       题库模块（题目增删改查）
-├── paper/          试卷模块（试卷管理与自动组卷）
-├── grading/        阅卷模块（自动评分与教师人工批阅）
-├── analytics/      统计模块（成绩分布、趋势分析、错题分析）
-├── teacher/        教师模块（教学班级管理）
-└── common/         公共模块（安全、配置、异常处理、审计日志）
-```
-
-每个业务模块采用 `controller/` -> `service/` -> `dto/` 分层结构，数据实体和 MyBatis Mapper 统一置于 `repository/`。
-
-### 前端结构
-
-```
-frontend/src/
-├── api/            Axios 接口封装
-├── views/          页面组件（admin/、teacher/、student/、exam/）
-├── components/     通用 Vue 组件
-├── stores/         Pinia 状态管理
-├── router/         Vue Router 路由守卫（基于角色）
-├── layout/         侧边栏、顶部导航布局
-└── utils/          工具函数
-```
 
 ### 关键设计
 

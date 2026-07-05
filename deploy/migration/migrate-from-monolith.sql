@@ -2,30 +2,63 @@
 -- The statements are idempotent by primary/unique key and can be rerun before traffic is opened.
 SET FOREIGN_KEY_CHECKS = 0;
 
-REPLACE INTO exam_iam.sys_user SELECT * FROM exam_mvp.sys_user;
-REPLACE INTO exam_iam.sys_role SELECT * FROM exam_mvp.sys_role;
-REPLACE INTO exam_iam.sys_user_role SELECT * FROM exam_mvp.sys_user_role;
+REPLACE INTO exam_iam.sys_user
+    (id,username,password,real_name,enabled,token_version,create_time,update_time,create_by,update_by)
+SELECT id,username,password,real_name,enabled,token_version,create_time,update_time,create_by,update_by
+FROM exam_mvp.sys_user;
+REPLACE INTO exam_iam.sys_role
+    (id,code,name,create_time,update_time,create_by,update_by)
+SELECT id,code,name,create_time,update_time,create_by,update_by FROM exam_mvp.sys_role;
+REPLACE INTO exam_iam.sys_user_role
+    (id,user_id,role_id,create_time,update_time,create_by,update_by)
+SELECT id,user_id,role_id,create_time,update_time,create_by,update_by FROM exam_mvp.sys_user_role;
 
-REPLACE INTO exam_academic.subject SELECT * FROM exam_mvp.subject;
-REPLACE INTO exam_academic.student_profile SELECT * FROM exam_mvp.student_profile;
-REPLACE INTO exam_academic.teacher_profile SELECT * FROM exam_mvp.teacher_profile;
+REPLACE INTO exam_academic.subject
+    (id,name,description,create_time,update_time,create_by,update_by)
+SELECT id,name,description,create_time,update_time,create_by,update_by FROM exam_mvp.subject;
+REPLACE INTO exam_academic.student_profile
+    (id,user_id,student_no,enrollment_year,status,create_time,update_time,create_by,update_by)
+SELECT id,user_id,student_no,enrollment_year,status,create_time,update_time,create_by,update_by
+FROM exam_mvp.student_profile;
+REPLACE INTO exam_academic.teacher_profile
+    (id,user_id,teacher_no,title,status,create_time,update_time,create_by,update_by)
+SELECT id,user_id,teacher_no,title,status,create_time,update_time,create_by,update_by
+FROM exam_mvp.teacher_profile;
 INSERT INTO exam_academic.teaching_class
     (id,name,subject_id,teacher_id,term,status,capacity,roster_version,create_time,update_time,create_by,update_by)
 SELECT id,name,subject_id,teacher_id,term,status,capacity,0,create_time,update_time,create_by,update_by
 FROM exam_mvp.teaching_class
 ON DUPLICATE KEY UPDATE name=VALUES(name),subject_id=VALUES(subject_id),teacher_id=VALUES(teacher_id),
     term=VALUES(term),status=VALUES(status),capacity=VALUES(capacity),update_time=VALUES(update_time);
-REPLACE INTO exam_academic.student_teaching_class SELECT * FROM exam_mvp.student_teaching_class;
+REPLACE INTO exam_academic.student_teaching_class
+    (id,student_id,subject_id,teaching_class_id,enroll_status,enrolled_at,dropped_at,
+     create_time,update_time,create_by,update_by)
+SELECT id,student_id,subject_id,teaching_class_id,enroll_status,enrolled_at,dropped_at,
+       create_time,update_time,create_by,update_by
+FROM exam_mvp.student_teaching_class;
 
-REPLACE INTO exam_content.question SELECT * FROM exam_mvp.question;
-REPLACE INTO exam_content.question_asset SELECT * FROM exam_mvp.question_asset;
+REPLACE INTO exam_content.question
+    (id,subject_id,type,difficulty,content,options_json,answer,analysis,default_score,creator_id,
+     create_time,update_time,create_by,update_by)
+SELECT id,subject_id,type,difficulty,content,options_json,answer,analysis,default_score,creator_id,
+       create_time,update_time,create_by,update_by
+FROM exam_mvp.question;
+REPLACE INTO exam_content.question_asset
+    (id,question_id,uploader_id,file_type,url,object_key,original_name,content_type,size,
+     create_time,update_time,create_by,update_by)
+SELECT id,question_id,uploader_id,file_type,url,object_key,original_name,content_type,size,
+       create_time,update_time,create_by,update_by
+FROM exam_mvp.question_asset;
 INSERT INTO exam_content.paper
     (id,name,subject_id,description,total_score,teacher_id,version,create_time,update_time,create_by,update_by)
 SELECT id,name,subject_id,description,total_score,teacher_id,0,create_time,update_time,create_by,update_by
 FROM exam_mvp.paper
 ON DUPLICATE KEY UPDATE name=VALUES(name),subject_id=VALUES(subject_id),description=VALUES(description),
     total_score=VALUES(total_score),teacher_id=VALUES(teacher_id),update_time=VALUES(update_time);
-REPLACE INTO exam_content.paper_question SELECT * FROM exam_mvp.paper_question;
+REPLACE INTO exam_content.paper_question
+    (id,paper_id,question_id,score,sort_order,create_time,update_time,create_by,update_by)
+SELECT id,paper_id,question_id,score,sort_order,create_time,update_time,create_by,update_by
+FROM exam_mvp.paper_question;
 
 -- Snapshot id is the legacy paper id for the one-time historical snapshot (version 1).
 INSERT INTO exam_content.paper_snapshot(id,paper_id,version,name,subject_id,total_score,created_at)
@@ -50,8 +83,15 @@ JOIN exam_mvp.paper_question pq ON pq.question_id=qa.question_id
 JOIN exam_content.paper_snapshot ps ON ps.id=pq.paper_id
 ON DUPLICATE KEY UPDATE url=VALUES(url),object_key=VALUES(object_key),original_name=VALUES(original_name),size=VALUES(size);
 
-REPLACE INTO exam_management.exam SELECT * FROM exam_mvp.exam;
-REPLACE INTO exam_management.exam_target_class SELECT * FROM exam_mvp.exam_target_class;
+REPLACE INTO exam_management.exam
+    (id,name,paper_id,start_time,end_time,duration_minutes,pass_score,status,publisher_id,
+     proctoring_level,proctoring_config_json,create_time,update_time,create_by,update_by)
+SELECT id,name,paper_id,start_time,end_time,duration_minutes,pass_score,status,publisher_id,
+       proctoring_level,proctoring_config_json,create_time,update_time,create_by,update_by
+FROM exam_mvp.exam;
+REPLACE INTO exam_management.exam_target_class
+    (id,exam_id,class_id,create_time,update_time,create_by,update_by)
+SELECT id,exam_id,class_id,create_time,update_time,create_by,update_by FROM exam_mvp.exam_target_class;
 INSERT INTO exam_management.exam_paper_ref(id,exam_id,paper_snapshot_id,snapshot_version,created_at)
 SELECT e.id,e.id,e.paper_id,1,COALESCE(e.update_time,e.create_time,CURRENT_TIMESTAMP(3))
 FROM exam_mvp.exam e WHERE e.status<>'DRAFT'
@@ -84,8 +124,16 @@ SELECT id,submission_id,question_id,answer_text,final_answer,source,create_time,
 FROM exam_mvp.submission_answer
 ON DUPLICATE KEY UPDATE answer_text=VALUES(answer_text),final_answer=VALUES(final_answer),
     source=VALUES(source),update_time=VALUES(update_time);
-REPLACE INTO exam_runtime.anti_cheat_event SELECT * FROM exam_mvp.anti_cheat_event;
-REPLACE INTO exam_runtime.proctoring_disposition SELECT * FROM exam_mvp.proctoring_disposition;
+REPLACE INTO exam_runtime.anti_cheat_event
+    (id,exam_id,student_id,event_type,event_time,duration_ms,payload,evidence_json,
+     create_time,update_time,create_by,update_by)
+SELECT id,exam_id,student_id,event_type,event_time,duration_ms,payload,evidence_json,
+       create_time,update_time,create_by,update_by
+FROM exam_mvp.anti_cheat_event;
+REPLACE INTO exam_runtime.proctoring_disposition
+    (id,exam_id,student_id,status,remark,handled_by,handled_at,create_time,update_time,create_by,update_by)
+SELECT id,exam_id,student_id,status,remark,handled_by,handled_at,create_time,update_time,create_by,update_by
+FROM exam_mvp.proctoring_disposition;
 
 INSERT INTO exam_grading.grading_submission
     (id,runtime_submission_id,exam_id,exam_name,pass_score,student_id,paper_snapshot_id,status,submitted_at,create_time,update_time)
@@ -197,6 +245,11 @@ GROUP BY c.exam_id,c.student_id,u.real_name,tc.name,es.status,s.status
 ON DUPLICATE KEY UPDATE student_name=VALUES(student_name),class_names_json=VALUES(class_names_json),
     session_status=VALUES(session_status),submission_status=VALUES(submission_status),event_count=VALUES(event_count),
     last_event_time=VALUES(last_event_time),latest_event_type=VALUES(latest_event_type),updated_at=VALUES(updated_at);
-REPLACE INTO exam_reporting.operation_audit_log SELECT * FROM exam_mvp.operation_audit_log;
+REPLACE INTO exam_reporting.operation_audit_log
+    (id,operator_id,operator_username,operator_roles,action,target_type,target_id,request_method,
+     request_path,request_ip,detail,status,error_message,operate_time,create_time,update_time,create_by,update_by)
+SELECT id,operator_id,operator_username,operator_roles,action,target_type,target_id,request_method,
+       request_path,request_ip,detail,status,error_message,operate_time,create_time,update_time,create_by,update_by
+FROM exam_mvp.operation_audit_log;
 
 SET FOREIGN_KEY_CHECKS = 1;

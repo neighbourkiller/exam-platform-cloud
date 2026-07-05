@@ -47,6 +47,7 @@ public class SecurityConfig {
                 .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout").permitAll()
                 .requestMatchers(HttpMethod.POST, "/internal/v1/service-tokens").permitAll()
+                .requestMatchers("/internal/v1/**").hasAuthority("SCOPE_internal")
                 .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/v1/health/ping").permitAll()
                 .anyRequest().authenticated())
