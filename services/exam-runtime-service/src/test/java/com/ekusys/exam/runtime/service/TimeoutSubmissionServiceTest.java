@@ -17,6 +17,7 @@ import com.ekusys.exam.runtime.repository.TimeoutSessionMapper;
 import com.ekusys.exam.runtime.repository.TimeoutSessionRow;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.LongStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,8 @@ class TimeoutSubmissionServiceTest {
     private TimeoutSessionMapper mapper;
     private RuntimeOutboxService outbox;
     private TransactionTemplate transactions;
+    private ExamSnapshotService snapshotService;
+    private SnapshotPersistenceService snapshotPersistence;
     private TimeoutSubmissionService service;
 
     @BeforeEach
@@ -34,7 +37,11 @@ class TimeoutSubmissionServiceTest {
         mapper = mock(TimeoutSessionMapper.class);
         outbox = mock(RuntimeOutboxService.class);
         transactions = mock(TransactionTemplate.class);
-        service = new TimeoutSubmissionService(mapper, outbox, transactions);
+        snapshotService = mock(ExamSnapshotService.class);
+        snapshotPersistence = mock(SnapshotPersistenceService.class);
+        service = new TimeoutSubmissionService(
+            mapper, outbox, transactions, snapshotService, snapshotPersistence
+        );
     }
 
     @Test
@@ -67,14 +74,19 @@ class TimeoutSubmissionServiceTest {
         TimeoutSessionRow row = new TimeoutSessionRow(1L, 2L, 3L, LocalDateTime.now());
         when(mapper.claim(1L)).thenReturn(1);
         when(mapper.findSubmissionId(2L, 3L)).thenReturn(99L);
+        when(snapshotService.loadLatestDraft(2L, 3L))
+            .thenReturn(new SnapshotDraft(Map.of(10L, "A"), 12L, LocalDateTime.now()));
 
         assertTrue(service.submitOne(row));
 
-        InOrder order = inOrder(mapper, outbox);
+        InOrder order = inOrder(mapper, snapshotService, snapshotPersistence, outbox);
         order.verify(mapper).claim(1L);
+        order.verify(snapshotService).loadLatestDraft(2L, 3L);
         order.verify(mapper).createSubmission(any(), org.mockito.ArgumentMatchers.eq(2L), org.mockito.ArgumentMatchers.eq(3L));
         order.verify(mapper).findSubmissionId(2L, 3L);
+        order.verify(snapshotPersistence).replaceFinalAnswers(99L, Map.of(10L, "A"), "TIMEOUT_SUBMIT");
         order.verify(outbox).submissionAccepted(99L);
         order.verify(mapper).markSubmitted(1L);
+        order.verify(snapshotService).clearAfterCommit(2L, 3L);
     }
 }
