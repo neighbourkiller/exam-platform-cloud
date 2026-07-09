@@ -10,6 +10,10 @@ public class SnapshotRequest {
     @NotNull
     private List<AnswerPayload> answers;
 
+    private String clientId;
+
+    private String leaseToken;
+
     private Long clientTimestamp;
 
     private Long snapshotVersion;

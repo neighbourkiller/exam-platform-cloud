@@ -42,8 +42,10 @@ public interface TimeoutSessionMapper {
     @Update("""
         UPDATE exam_session
            SET status = 'SUBMITTED', end_time = CURRENT_TIMESTAMP(3), claim_time = NULL,
+               active_client_id = NULL, active_client_token = NULL,
+               active_client_lease_until = NULL, active_client_last_seen = NULL,
                update_time = CURRENT_TIMESTAMP(3)
-         WHERE id = #{id} AND status = 'AUTO_SUBMITTING'
+          WHERE id = #{id} AND status = 'AUTO_SUBMITTING'
         """)
     int markSubmitted(Long id);
 

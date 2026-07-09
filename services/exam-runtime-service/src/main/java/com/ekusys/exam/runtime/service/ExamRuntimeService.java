@@ -6,9 +6,12 @@ import com.ekusys.exam.common.security.SecurityUtils;
 import com.ekusys.exam.content.api.PaperSnapshotQuestion;
 import com.ekusys.exam.exam.dto.AnswerPayload;
 import com.ekusys.exam.exam.dto.AntiCheatEventRequest;
+import com.ekusys.exam.exam.dto.ExamClientLeaseRequest;
+import com.ekusys.exam.exam.dto.ExamClientLeaseView;
 import com.ekusys.exam.exam.dto.ProctoringPolicyView;
 import com.ekusys.exam.exam.dto.SnapshotAckView;
 import com.ekusys.exam.exam.dto.SnapshotRequest;
+import com.ekusys.exam.exam.dto.StartExamRequest;
 import com.ekusys.exam.exam.dto.StartExamResponse;
 import com.ekusys.exam.exam.dto.StudentExamQuestionView;
 import com.ekusys.exam.exam.dto.StudentExamView;
@@ -23,6 +26,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,17 +39,20 @@ public class ExamRuntimeService {
     private final RuntimeOutboxService outbox;
     private final TimeoutSubmissionService timeoutSubmissionService;
     private final ExamSnapshotService snapshotService;
+    private final ExamClientLeaseService clientLeaseService;
 
     public ExamRuntimeService(JdbcTemplate jdbc, ManagementRuntimeClient management,
                               ObjectMapper mapper, RuntimeOutboxService outbox,
                               TimeoutSubmissionService timeoutSubmissionService,
-                              ExamSnapshotService snapshotService) {
+                              ExamSnapshotService snapshotService,
+                              ExamClientLeaseService clientLeaseService) {
         this.jdbc = jdbc;
         this.management = management;
         this.mapper = mapper;
         this.outbox = outbox;
         this.timeoutSubmissionService = timeoutSubmissionService;
         this.snapshotService = snapshotService;
+        this.clientLeaseService = clientLeaseService;
     }
 
     public List<StudentExamView> listStudent() {
@@ -66,7 +73,7 @@ public class ExamRuntimeService {
     }
 
     @Transactional
-    public StartExamResponse start(Long examId) {
+    public StartExamResponse start(Long examId, StartExamRequest request) {
         Long userId = requireUser();
         RuntimeExamSnapshot exam = management.snapshot(examId).getData();
         LocalDateTime now = dbNow();
@@ -80,33 +87,52 @@ public class ExamRuntimeService {
         List<SessionRow> rows = findSessions(examId, userId);
         boolean resumed = !rows.isEmpty();
         SessionRow session;
+        ExamClientLeaseView lease;
         if (resumed) {
             session = rows.getFirst();
             if (!"ANSWERING".equals(session.status())) {
                 throw new BusinessException("你已提交过本场考试");
             }
+            lease = clientLeaseService.acquire(session.id(), clientId(request), leaseToken(request), now);
         } else {
             LocalDateTime durationDeadline = now.plusMinutes(exam.durationMinutes());
             LocalDateTime deadline = durationDeadline.isBefore(exam.endTime()) ? durationDeadline : exam.endTime();
             long sessionId = IdWorker.getId();
-            jdbc.update(
-                """
-                    insert into exam_session(
-                        id,exam_id,student_id,status,start_time,deadline_time,create_time,update_time
-                    ) values(?,?,?,'ANSWERING',?,?,current_timestamp(3),current_timestamp(3))
-                    """,
-                sessionId, examId, userId, now, deadline
-            );
-            jdbc.update(
-                """
-                    insert into submission(
-                        id,exam_id,student_id,status,paper_snapshot_id,timeout_submit,create_time,update_time
-                    ) values(?,?,?,'IN_PROGRESS',?,0,current_timestamp(3),current_timestamp(3))
-                    """,
-                IdWorker.getId(), examId, userId, exam.paper().snapshotId()
-            );
-            outbox.sessionStarted(examId, userId);
-            session = new SessionRow(sessionId, now, deadline, "ANSWERING");
+            lease = clientLeaseService.createInitialLease(clientId(request), now);
+            try {
+                jdbc.update(
+                    """
+                        insert into exam_session(
+                            id,exam_id,student_id,status,start_time,deadline_time,claim_time,
+                            active_client_id,active_client_token,active_client_lease_until,
+                            active_client_last_seen,create_time,update_time
+                        ) values(?,?,?,'ANSWERING',?,?,null,?,?,?,?,current_timestamp(3),current_timestamp(3))
+                        """,
+                    sessionId, examId, userId, now, deadline,
+                    clientId(request), lease.getLeaseToken(), lease.getLeaseExpiresAt(), now
+                );
+                jdbc.update(
+                    """
+                        insert into submission(
+                            id,exam_id,student_id,status,paper_snapshot_id,timeout_submit,create_time,update_time
+                        ) values(?,?,?,'IN_PROGRESS',?,0,current_timestamp(3),current_timestamp(3))
+                        """,
+                    IdWorker.getId(), examId, userId, exam.paper().snapshotId()
+                );
+                outbox.sessionStarted(examId, userId);
+                session = new SessionRow(sessionId, now, deadline, "ANSWERING");
+            } catch (DuplicateKeyException exception) {
+                rows = findSessions(examId, userId);
+                if (rows.isEmpty()) {
+                    throw exception;
+                }
+                resumed = true;
+                session = rows.getFirst();
+                if (!"ANSWERING".equals(session.status())) {
+                    throw new BusinessException("你已提交过本场考试");
+                }
+                lease = clientLeaseService.acquire(session.id(), clientId(request), leaseToken(request), now);
+            }
         }
 
         SnapshotDraft draft = snapshotService.loadLatestDraft(examId, userId);
@@ -122,9 +148,23 @@ public class ExamRuntimeService {
             .endTime(exam.endTime())
             .deadlineTime(session.deadline())
             .draftUpdatedAt(draft.updatedAt())
+            .leaseToken(lease.getLeaseToken())
+            .leaseExpiresAt(lease.getLeaseExpiresAt())
+            .heartbeatIntervalSeconds(lease.getHeartbeatIntervalSeconds())
+            .leaseTimeoutSeconds(lease.getLeaseTimeoutSeconds())
             .proctoringPolicy(policy(exam))
             .questions(questions)
             .build();
+    }
+
+    public ExamClientLeaseView heartbeat(Long examId, ExamClientLeaseRequest request) {
+        Long userId = requireUser();
+        SessionRow session = active(examId, userId);
+        LocalDateTime now = dbNow();
+        if (!now.isBefore(session.deadline())) {
+            throw new BusinessException("考试作答时间已结束");
+        }
+        return clientLeaseService.renew(session.id(), clientId(request), leaseToken(request), now);
     }
 
     public SnapshotAckView snapshot(Long examId, SnapshotRequest request) {
@@ -134,21 +174,29 @@ public class ExamRuntimeService {
         if (!now.isBefore(session.deadline())) {
             throw new BusinessException("考试作答时间已结束");
         }
-        return snapshotService.save(
+        ExamClientLeaseView lease = clientLeaseService.renew(session.id(), request.getClientId(), request.getLeaseToken(), now);
+        SnapshotAckView ack = snapshotService.save(
             examId, userId, session.id(), session.deadline(), now, request
         );
+        ack.setLeaseToken(lease.getLeaseToken());
+        ack.setLeaseExpiresAt(lease.getLeaseExpiresAt());
+        ack.setHeartbeatIntervalSeconds(lease.getHeartbeatIntervalSeconds());
+        ack.setLeaseTimeoutSeconds(lease.getLeaseTimeoutSeconds());
+        return ack;
     }
 
     @Transactional
     public SubmitResultView submit(Long examId, SubmitExamRequest request) {
         Long userId = requireUser();
         SessionRow session = active(examId, userId);
-        boolean expired = !dbNow().isBefore(session.deadline());
+        LocalDateTime now = dbNow();
+        boolean expired = !now.isBefore(session.deadline());
         Long submissionId = submissionId(examId, userId);
         if (expired) {
             timeoutSubmissionService.submitExpired(session.id(), examId, userId);
             return SubmitResultView.builder().submissionId(submissionId).status("PROCESSING").build();
         }
+        clientLeaseService.requireCurrent(session.id(), request.getClientId(), request.getLeaseToken(), now);
 
         saveAnswers(submissionId, request.getAnswers(), "SUBMIT", true);
         jdbc.update(
@@ -163,7 +211,10 @@ public class ExamRuntimeService {
         jdbc.update(
             """
                 update exam_session
-                   set status='SUBMITTED',end_time=current_timestamp(3),update_time=current_timestamp(3)
+                   set status='SUBMITTED',end_time=current_timestamp(3),
+                       active_client_id=null,active_client_token=null,
+                       active_client_lease_until=null,active_client_last_seen=null,
+                       update_time=current_timestamp(3)
                  where id=? and status='ANSWERING'
                 """,
             session.id()
@@ -258,6 +309,22 @@ public class ExamRuntimeService {
             "select id from submission where exam_id=? and student_id=?",
             Long.class, examId, userId
         );
+    }
+
+    private String clientId(StartExamRequest request) {
+        return request == null ? null : request.getClientId();
+    }
+
+    private String leaseToken(StartExamRequest request) {
+        return request == null ? null : request.getLeaseToken();
+    }
+
+    private String clientId(ExamClientLeaseRequest request) {
+        return request == null ? null : request.getClientId();
+    }
+
+    private String leaseToken(ExamClientLeaseRequest request) {
+        return request == null ? null : request.getLeaseToken();
     }
 
     private boolean submitted(Long examId, Long userId) {

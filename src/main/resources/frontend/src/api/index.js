@@ -34,7 +34,8 @@ export const proctoringStudentsApi = (examId) => http.get(`/exams/${examId}/proc
 export const proctoringTimelineApi = (examId, studentId) => http.get(`/exams/${examId}/proctoring/students/${studentId}/timeline`)
 export const updateProctoringDispositionApi = (examId, studentId, data) =>
   http.put(`/exams/${examId}/proctoring/students/${studentId}/disposition`, data)
-export const startExamApi = (id) => http.post(`/exams/${id}/start`)
+export const startExamApi = (id, data = {}) => http.post(`/exams/${id}/start`, data)
+export const clientHeartbeatApi = (id, data, config = {}) => http.post(`/exams/${id}/client-heartbeat`, data, config)
 export const snapshotApi = (id, data, config = {}) => http.post(`/exams/${id}/snapshot`, data, config)
 export const submitExamApi = (id, data) => http.post(`/exams/${id}/submit`, data)
 export const antiCheatApi = (id, data, config = {}) => http.post(`/exams/${id}/anti-cheat-events`, data, config)

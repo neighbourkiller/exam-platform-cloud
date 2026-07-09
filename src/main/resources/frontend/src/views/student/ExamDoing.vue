@@ -182,7 +182,7 @@
         <span>已完成 {{ answeredCount }} 题</span>
         <span>已标记 {{ markedCount }} 题</span>
       </div>
-      <el-button type="primary" size="large" @click="submit">交卷</el-button>
+      <el-button type="primary" size="large" :disabled="leaseState.conflict" @click="submit">交卷</el-button>
     </footer>
   </div>
 </template>
@@ -191,7 +191,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { antiCheatApi, healthPingApi, snapshotApi, startExamApi, submitExamApi, uploadAntiCheatEvidenceApi } from '../../api'
+import { antiCheatApi, clientHeartbeatApi, healthPingApi, snapshotApi, startExamApi, submitExamApi, uploadAntiCheatEvidenceApi } from '../../api'
 import { useAuthStore } from '../../stores/auth'
 import { useCameraProctoring } from '../../composables/useCameraProctoring'
 import {
@@ -204,6 +204,12 @@ import {
   saveDraft,
   updateSyncItem
 } from '../../utils/examDraftStore'
+import {
+  clearExamClientLease,
+  createExamWindowGuard,
+  getOrCreateExamClientLease,
+  updateExamClientLease
+} from '../../utils/examClientLease'
 import { parseDateTime } from '../../utils/datetime'
 
 const route = useRoute()
@@ -236,6 +242,14 @@ const networkState = reactive({
   lastCheckedAt: null,
   queueSize: 0,
   flushing: false
+})
+const leaseState = reactive({
+  clientId: '',
+  leaseToken: null,
+  leaseExpiresAt: null,
+  heartbeatIntervalSeconds: 15,
+  leaseTimeoutSeconds: 90,
+  conflict: false
 })
 const offlineRecoveredMode = ref(false)
 const pendingSubmitIntent = ref(null)
@@ -279,6 +293,8 @@ let bannerResetTimer = null
 let draftSaveTimer = null
 let queueFlushTimer = null
 let healthCheckTimer = null
+let heartbeatTimer = null
+let windowGuard = null
 let pendingDraftDirty = false
 let pendingDraftAnswerTimestampUpdate = false
 let navigationLeaveReporting = false
@@ -965,6 +981,54 @@ const updateNetworkStatus = (status, latencyMs = null) => {
   isOnline.value = status !== 'OFFLINE'
 }
 
+const syncLeaseState = (record) => {
+  leaseState.clientId = record?.clientId || ''
+  leaseState.leaseToken = record?.leaseToken || null
+  leaseState.leaseExpiresAt = record?.leaseExpiresAt || null
+  leaseState.heartbeatIntervalSeconds = Number(record?.heartbeatIntervalSeconds || 15)
+  leaseState.leaseTimeoutSeconds = Number(record?.leaseTimeoutSeconds || 90)
+}
+
+const ensureExamClientLease = () => {
+  if (!syncState.userId) {
+    return null
+  }
+  const record = getOrCreateExamClientLease(syncState.userId, examId)
+  syncLeaseState(record)
+  return record
+}
+
+const applyLeaseResponse = (payload = {}) => {
+  if (!syncState.userId || !payload?.leaseToken) {
+    return
+  }
+  const record = updateExamClientLease(syncState.userId, examId, payload)
+  syncLeaseState(record)
+}
+
+const buildClientLeasePayload = () => {
+  const record = ensureExamClientLease()
+  return {
+    clientId: leaseState.clientId || record?.clientId || null,
+    leaseToken: leaseState.leaseToken || record?.leaseToken || null
+  }
+}
+
+const withClientLeasePayload = (payload = {}) => ({
+  ...payload,
+  ...buildClientLeasePayload()
+})
+
+const withoutClientLeasePayload = (payload = {}) => {
+  const { clientId, leaseToken, ...rest } = payload
+  return rest
+}
+
+const isExamClientLeaseError = (error) => {
+  const code = error?.code || error?.responseData?.code || error?.response?.data?.code
+  return code === 'EXAM_CLIENT_CONFLICT' || code === 'EXAM_CLIENT_REQUIRED'
+}
+
 const isRecoverableNetworkError = (error) => {
   if (error?.isBusinessError || error?.responseData) {
     return false
@@ -982,6 +1046,63 @@ const markNetworkFailure = (error) => {
   syncState.lastSyncErrorMessage = message
 }
 
+const stopExamRuntimeTimers = () => {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+  if (snapshotTimer) {
+    clearInterval(snapshotTimer)
+    snapshotTimer = null
+  }
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer)
+    healthCheckTimer = null
+  }
+  if (inactivityTimer) {
+    clearInterval(inactivityTimer)
+    inactivityTimer = null
+  }
+  if (queueFlushTimer) {
+    clearTimeout(queueFlushTimer)
+    queueFlushTimer = null
+  }
+}
+
+const handleExamClientLeaseError = async (error) => {
+  if (!isExamClientLeaseError(error) || leaseState.conflict) {
+    return isExamClientLeaseError(error)
+  }
+  leaseState.conflict = true
+  allowLeaveExam.value = true
+  stopExamRuntimeTimers()
+  cameraProctoring.stop()
+  if (syncState.userId) {
+    clearExamClientLease(syncState.userId, examId)
+  }
+  if (windowGuard) {
+    windowGuard.close()
+    windowGuard = null
+  }
+  const message = error?.message || '本场考试已在其他窗口答题，请回到原窗口继续作答或稍后重试。'
+  try {
+    await ElMessageBox.alert(message, '考试窗口已被占用', {
+      confirmButtonText: '返回我的考试',
+      type: 'warning',
+      closeOnClickModal: false,
+      closeOnPressEscape: false
+    })
+  } catch {
+    // Keep routing even if the dialog is dismissed by the browser.
+  }
+  router.replace('/student/exams')
+  return true
+}
+
 const runHealthCheck = async () => {
   if (!navigator.onLine) {
     updateNetworkStatus('OFFLINE')
@@ -995,6 +1116,31 @@ const runHealthCheck = async () => {
     return true
   } catch (error) {
     markNetworkFailure(error)
+    return false
+  }
+}
+
+const runClientHeartbeat = async () => {
+  if (!syncState.initialized || leaseState.conflict || !navigator.onLine) {
+    return false
+  }
+  try {
+    const startedAt = Date.now()
+    const lease = await clientHeartbeatApi(examId, buildClientLeasePayload(), { silent: true, timeout: 10000 })
+    applyLeaseResponse(lease)
+    const latency = Date.now() - startedAt
+    updateNetworkStatus(latency > 2500 ? 'DEGRADED' : 'ONLINE', latency)
+    return true
+  } catch (error) {
+    if (await handleExamClientLeaseError(error)) {
+      return false
+    }
+    if (isRecoverableNetworkError(error)) {
+      markNetworkFailure(error)
+      return false
+    }
+    syncState.syncErrorAt = Date.now()
+    syncState.lastSyncErrorMessage = error?.message || '考试窗口心跳失败'
     return false
   }
 }
@@ -1188,7 +1334,7 @@ const retryDelayForAttempt = (attemptCount = 0) => {
 }
 
 const buildSnapshotPayload = (snapshotVersion = syncState.updatedAt || Date.now()) => ({
-  ...buildSubmitPayload(),
+  ...withClientLeasePayload(buildSubmitPayload()),
   clientTimestamp: snapshotVersion,
   snapshotVersion
 })
@@ -1201,7 +1347,7 @@ const queueSnapshotSync = async (payload) => {
     userId: syncState.userId,
     examId,
     type: 'SNAPSHOT',
-    payload,
+    payload: withoutClientLeasePayload(payload),
     occurredAt: Date.now()
   })
   await refreshQueueSize()
@@ -1248,7 +1394,8 @@ const flushSyncQueue = async ({ force = false } = {}) => {
     for (const item of dueItems) {
       try {
         if (item.type === 'SNAPSHOT') {
-          const ack = await snapshotApi(examId, item.payload, { silent: true, timeout: 10000 })
+          const ack = await snapshotApi(examId, withClientLeasePayload(item.payload), { silent: true, timeout: 10000 })
+          applyLeaseResponse(ack)
           syncState.lastSyncedAt = Math.max(Number(syncState.lastSyncedAt || 0), Number(item.payload?.snapshotVersion || item.occurredAt || 0))
           syncState.lastServerAckAt = ack?.serverReceivedAt || syncState.lastServerAckAt
           syncState.snapshotVersion = Math.max(syncState.snapshotVersion || 0, Number(ack?.snapshotVersion || item.payload?.snapshotVersion || 0))
@@ -1275,6 +1422,9 @@ const flushSyncQueue = async ({ force = false } = {}) => {
         }
         await deleteSyncItem(item.id)
       } catch (error) {
+        if (await handleExamClientLeaseError(error)) {
+          break
+        }
         if (!isRecoverableNetworkError(error)) {
           item.lastError = error?.message || '同步失败'
           await deleteSyncItem(item.id)
@@ -1331,6 +1481,7 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
   try {
     const startedAt = Date.now()
     const ack = await snapshotApi(examId, payload, { silent: true, timeout: 10000 })
+    applyLeaseResponse(ack)
     const latency = Date.now() - startedAt
     updateNetworkStatus(latency > 2500 ? 'DEGRADED' : 'ONLINE', latency)
 
@@ -1351,6 +1502,9 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
   } catch (error) {
     syncState.syncErrorAt = Date.now()
     syncState.lastSyncErrorMessage = error?.message || '服务器同步失败'
+    if (await handleExamClientLeaseError(error)) {
+      return false
+    }
     if (!isRecoverableNetworkError(error)) {
       return false
     }
@@ -1398,7 +1552,14 @@ const submit = async (needConfirm = true) => {
     ElMessage.warning(syncState.lastSyncErrorMessage || '当前网络不稳定，答案已保存在本机。请等待同步成功后再交卷。')
     return
   }
-  await submitExamApi(examId, buildSubmitPayload())
+  try {
+    await submitExamApi(examId, withClientLeasePayload(buildSubmitPayload()))
+  } catch (error) {
+    if (await handleExamClientLeaseError(error)) {
+      return
+    }
+    throw error
+  }
   allowLeaveExam.value = true
   if (draftSaveTimer) {
     clearTimeout(draftSaveTimer)
@@ -1407,6 +1568,7 @@ const submit = async (needConfirm = true) => {
   if (syncState.userId) {
     await clearDraft(syncState.userId, examId)
     await clearSyncItems(syncState.userId, examId)
+    clearExamClientLease(syncState.userId, examId)
   }
   syncState.dirty = false
   cameraProctoring.stop()
@@ -1599,12 +1761,37 @@ const onPopState = (event) => {
 const bootstrapExam = async () => {
   syncState.userId = auth.userId == null ? null : String(auth.userId)
   syncState.initialized = false
+  const clientLease = ensureExamClientLease()
+  windowGuard = await createExamWindowGuard({
+    userId: syncState.userId || 'anonymous',
+    examId,
+    onDuplicate: () => {
+      void handleExamClientLeaseError({
+        code: 'EXAM_CLIENT_CONFLICT',
+        message: '本场考试已在另一个本机窗口打开，请回到原窗口继续作答。'
+      })
+    }
+  })
+  if (!windowGuard.acquired) {
+    await handleExamClientLeaseError({
+      code: 'EXAM_CLIENT_CONFLICT',
+      message: '本场考试已在另一个窗口答题，请回到原窗口继续作答。'
+    })
+    return
+  }
   const localDraft = syncState.userId ? await loadDraft(syncState.userId, examId) : null
   let data = null
   try {
-    data = await startExamApi(examId)
+    data = await startExamApi(examId, buildClientLeasePayload())
+    applyLeaseResponse(data)
   } catch (error) {
+    if (await handleExamClientLeaseError(error)) {
+      return
+    }
     if (!isRecoverableNetworkError(error)) {
+      throw error
+    }
+    if (!clientLease?.leaseToken) {
       throw error
     }
     const runtime = localDraft?.examRuntime
@@ -1691,6 +1878,9 @@ const bootstrapExam = async () => {
     void syncDirtyDraft()
     void flushSyncQueue()
   }, 15000)
+  heartbeatTimer = setInterval(() => {
+    void runClientHeartbeat()
+  }, Math.max(5, Number(leaseState.heartbeatIntervalSeconds || 15)) * 1000)
   healthCheckTimer = setInterval(() => {
     void runHealthCheck()
   }, 30000)
@@ -1760,7 +1950,16 @@ onBeforeRouteLeave(async (to, from) => {
 })
 
 onMounted(async () => {
-  await bootstrapExam()
+  try {
+    await bootstrapExam()
+  } catch (error) {
+    if (await handleExamClientLeaseError(error)) {
+      return
+    }
+    allowLeaveExam.value = true
+    ElMessage.error(error?.message || '进入考试失败，请返回考试列表后重试。')
+    router.replace('/student/exams')
+  }
 })
 
 onBeforeUnmount(() => {
@@ -1768,11 +1967,16 @@ onBeforeUnmount(() => {
   void exitFullscreenForExamEnd()
   if (timer) clearInterval(timer)
   if (snapshotTimer) clearInterval(snapshotTimer)
+  if (heartbeatTimer) clearInterval(heartbeatTimer)
   if (inactivityTimer) clearInterval(inactivityTimer)
   if (healthCheckTimer) clearInterval(healthCheckTimer)
   if (queueFlushTimer) clearTimeout(queueFlushTimer)
   if (bannerResetTimer) clearTimeout(bannerResetTimer)
   cameraProctoring.stop()
+  if (windowGuard) {
+    windowGuard.close()
+    windowGuard = null
+  }
   flushDraftSave()
   window.removeEventListener('blur', onBlur)
   window.removeEventListener('focus', onFocus)

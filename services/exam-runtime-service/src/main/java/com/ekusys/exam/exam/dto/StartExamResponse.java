@@ -17,6 +17,10 @@ public class StartExamResponse {
     private LocalDateTime endTime;
     private LocalDateTime deadlineTime;
     private LocalDateTime draftUpdatedAt;
+    private String leaseToken;
+    private LocalDateTime leaseExpiresAt;
+    private Integer heartbeatIntervalSeconds;
+    private Integer leaseTimeoutSeconds;
     private ProctoringPolicyView proctoringPolicy;
     private List<StudentExamQuestionView> questions;
 }

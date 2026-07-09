@@ -6,13 +6,13 @@ import lombok.Data;
 
 @Data
 @Builder
-public class SnapshotAckView {
+public class ExamClientLeaseView {
 
-    private LocalDateTime serverReceivedAt;
-    private Long clientTimestamp;
-    private Long snapshotVersion;
     private String leaseToken;
+
     private LocalDateTime leaseExpiresAt;
+
     private Integer heartbeatIntervalSeconds;
+
     private Integer leaseTimeoutSeconds;
 }

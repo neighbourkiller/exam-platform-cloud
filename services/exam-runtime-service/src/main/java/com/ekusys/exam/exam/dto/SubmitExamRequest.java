@@ -9,4 +9,8 @@ public class SubmitExamRequest {
 
     @NotNull
     private List<AnswerPayload> answers;
+
+    private String clientId;
+
+    private String leaseToken;
 }

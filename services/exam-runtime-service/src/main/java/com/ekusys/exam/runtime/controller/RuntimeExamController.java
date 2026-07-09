@@ -4,6 +4,8 @@ import com.ekusys.exam.common.api.ApiResponse;
 import com.ekusys.exam.common.audit.AuditOperation;
 import com.ekusys.exam.exam.dto.AntiCheatEventRequest;
 import com.ekusys.exam.exam.dto.AntiCheatEvidenceUploadView;
+import com.ekusys.exam.exam.dto.ExamClientLeaseRequest;
+import com.ekusys.exam.exam.dto.ExamClientLeaseView;
 import com.ekusys.exam.exam.dto.ProctoringDispositionRequest;
 import com.ekusys.exam.exam.dto.ProctoringDispositionView;
 import com.ekusys.exam.exam.dto.ProctoringOverviewView;
@@ -11,6 +13,7 @@ import com.ekusys.exam.exam.dto.ProctoringStudentTimelineView;
 import com.ekusys.exam.exam.dto.ProctoringStudentView;
 import com.ekusys.exam.exam.dto.SnapshotAckView;
 import com.ekusys.exam.exam.dto.SnapshotRequest;
+import com.ekusys.exam.exam.dto.StartExamRequest;
 import com.ekusys.exam.exam.dto.StartExamResponse;
 import com.ekusys.exam.exam.dto.StudentExamView;
 import com.ekusys.exam.exam.dto.SubmitExamRequest;
@@ -52,7 +55,17 @@ public class RuntimeExamController {
 
     @PostMapping("/{id}/start")
     @PreAuthorize("hasRole('STUDENT')")
-    public ApiResponse<StartExamResponse> start(@PathVariable Long id) { return ApiResponse.ok(runtime.start(id)); }
+    public ApiResponse<StartExamResponse> start(@PathVariable Long id,
+                                                @RequestBody(required = false) StartExamRequest request) {
+        return ApiResponse.ok(runtime.start(id, request));
+    }
+
+    @PostMapping("/{id}/client-heartbeat")
+    @PreAuthorize("hasRole('STUDENT')")
+    public ApiResponse<ExamClientLeaseView> heartbeat(@PathVariable Long id,
+                                                       @Valid @RequestBody ExamClientLeaseRequest request) {
+        return ApiResponse.ok(runtime.heartbeat(id, request));
+    }
 
     @PostMapping("/{id}/snapshot")
     @PreAuthorize("hasRole('STUDENT')")
