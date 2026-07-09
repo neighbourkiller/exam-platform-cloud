@@ -22,7 +22,10 @@ public class SubmissionAcceptedConsumer {
         this.jdbc = jdbc;
     }
 
-    @RabbitListener(queues = "exam.grading.submission-accepted")
+    @RabbitListener(
+        queues = GradingRabbitConfig.SUBMISSION_QUEUE,
+        containerFactory = "gradingSubmissionListenerContainerFactory"
+    )
     @Transactional
     public void consume(String payload) throws Exception {
         JsonNode root = objectMapper.readTree(payload);
