@@ -46,4 +46,9 @@ public class ReportingRabbitConfig {
     Binding reportingProctoringBinding(TopicExchange reportingExamEventsExchange, Queue reportingEventsQueue) {
         return BindingBuilder.bind(reportingEventsQueue).to(reportingExamEventsExchange).with("ProctoringEventRecorded");
     }
+
+    @Bean
+    Binding reportingAuditBinding(TopicExchange reportingExamEventsExchange, Queue reportingEventsQueue) {
+        return BindingBuilder.bind(reportingEventsQueue).to(reportingExamEventsExchange).with("AuditOperationRecorded");
+    }
 }

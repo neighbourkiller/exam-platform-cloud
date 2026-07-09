@@ -16,6 +16,9 @@ public interface IamUserClient {
     @GetMapping("/internal/v1/users/{id}")
     ApiResponse<UserSummary> get(@PathVariable("id") Long id);
 
+    @GetMapping("/internal/v1/users/by-username")
+    ApiResponse<UserSummary> byUsername(@RequestParam("username") String username);
+
     @PostMapping("/internal/v1/users/batch")
     ApiResponse<List<UserSummary>> batch(@RequestBody UserBatchRequest request);
 

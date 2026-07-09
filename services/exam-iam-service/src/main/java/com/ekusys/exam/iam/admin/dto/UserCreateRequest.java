@@ -12,6 +12,8 @@ public class UserCreateRequest {
     private String password;
     private String studentNo;
     private String enrollmentYear;
+    private String teacherNo;
+    private String title;
     @NotEmpty private List<Long> roleIds;
     private List<Long> teachingClassIds;
 }

@@ -4,10 +4,13 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.ekusys.exam.academic.api.ClassRosterView;
 import com.ekusys.exam.academic.api.SubjectSummary;
+import com.ekusys.exam.academic.api.TeachingClassBatchRequest;
+import com.ekusys.exam.academic.api.TeachingClassSummary;
 import com.ekusys.exam.common.enums.ExamStatus;
 import com.ekusys.exam.common.exception.BusinessException;
 import com.ekusys.exam.common.security.SecurityUtils;
 import com.ekusys.exam.content.api.PaperSnapshotView;
+import com.ekusys.exam.content.api.PaperSummary;
 import com.ekusys.exam.exam.dto.ExamCreateRequest;
 import com.ekusys.exam.exam.dto.TeacherExamView;
 import com.ekusys.exam.management.api.RuntimeExamSnapshot;
@@ -22,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,15 +39,33 @@ public class ExamManagementService {
   AcademicRosterClient academic, ContentSnapshotClient content, ObjectMapper mapper, ManagementOutboxService outbox){this.examMapper=examMapper;this.targetMapper=targetMapper;this.jdbc=jdbc;this.academic=academic;this.content=content;this.mapper=mapper;this.outbox=outbox;}
 
  @Transactional public Long create(ExamCreateRequest request){
-  if(!request.getStartTime().isBefore(request.getEndTime())) throw new BusinessException("考试开始时间必须早于结束时间");
+  validateCreate(request);
   Exam exam=new Exam(); exam.setName(request.getName()); exam.setPaperId(request.getPaperId()); exam.setStartTime(request.getStartTime());
   exam.setEndTime(request.getEndTime()); exam.setDurationMinutes(request.getDurationMinutes()); exam.setPassScore(request.getPassScore());
   exam.setStatus(ExamStatus.DRAFT.name()); exam.setPublisherId(SecurityUtils.getCurrentUserId());
   exam.setProctoringLevel(request.getProctoringLevel()==null?"STANDARD":request.getProctoringLevel());
   try { exam.setProctoringConfigJson(request.getProctoringPolicy()==null?null:mapper.writeValueAsString(request.getProctoringPolicy())); }
   catch(Exception ex){throw new BusinessException("监考策略格式错误");}
-  examMapper.insert(exam); for(Long classId:request.getTargetClassIds()){ if(academic.roster(classId).getData()==null) throw new BusinessException("教学班不存在: "+classId); ExamTargetClass link=new ExamTargetClass();link.setExamId(exam.getId());link.setClassId(classId);targetMapper.insert(link); }
+  examMapper.insert(exam); for(Long classId:request.getTargetClassIds().stream().distinct().toList()){ ExamTargetClass link=new ExamTargetClass();link.setExamId(exam.getId());link.setClassId(classId);targetMapper.insert(link); }
   return exam.getId();
+ }
+
+ @Transactional public Long createAndOptionallyPublish(ExamCreateRequest request, boolean autoPublish){
+  Long id=create(request); if(autoPublish) publish(id); return id;
+ }
+
+ public void validateCreate(ExamCreateRequest request){
+  if(request.getStartTime()==null||request.getEndTime()==null||!request.getStartTime().isBefore(request.getEndTime())) throw new BusinessException("考试开始时间必须早于结束时间");
+  if(request.getDurationMinutes()==null||request.getDurationMinutes()<1) throw new BusinessException("考试时长必须大于0");
+  if(request.getPassScore()==null||request.getPassScore()<0) throw new BusinessException("及格分不能小于0");
+  List<Long> classIds=request.getTargetClassIds()==null?List.of():request.getTargetClassIds().stream().filter(Objects::nonNull).distinct().toList();
+  if(classIds.isEmpty()) throw new BusinessException("目标教学班不能为空");
+  PaperSummary paper=content.summary(request.getPaperId()).getData();
+  if(paper==null) throw new BusinessException("试卷不存在");
+  if(paper.subjectId()==null) throw new BusinessException("试卷未绑定课程，无法发布考试");
+  List<TeachingClassSummary> classes=academic.classSummaries(new TeachingClassBatchRequest(classIds)).getData();
+  if(classes==null||classes.size()!=classIds.size()) throw new BusinessException("存在无效教学班ID");
+  for(TeachingClassSummary value:classes) if(!Objects.equals(paper.subjectId(),value.subjectId())) throw new BusinessException("目标教学班课程与试卷课程不一致");
  }
 
  @Transactional public void publish(Long id){

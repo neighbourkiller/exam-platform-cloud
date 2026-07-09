@@ -43,8 +43,24 @@ public class ReportingEventConsumer {
             case "SubmissionAccepted" -> projectSubmission(data);
             case "ProctoringEventRecorded" -> projectProctoring(data);
             case "GradeCompleted" -> projectGrade(data);
+            case "AuditOperationRecorded" -> projectAudit(data);
             default -> throw new IllegalArgumentException("不支持的报表事件类型");
         }
+    }
+
+    private void projectAudit(JsonNode data) {
+        jdbc.update(
+            """
+                insert into operation_audit_log(id,operator_id,operator_username,operator_roles,action,target_type,
+                    target_id,request_method,request_path,request_ip,detail,status,error_message,operate_time,create_time)
+                values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,current_timestamp(3))
+                """,
+            IdWorker.getId(), nullableLong(data, "operatorId"), nullableText(data, "operatorUsername"),
+            nullableText(data, "operatorRoles"), requiredText(data, "action"), requiredText(data, "targetType"),
+            nullableText(data, "targetId"), nullableText(data, "requestMethod"), nullableText(data, "requestPath"),
+            nullableText(data, "requestIp"), nullableText(data, "detail"), requiredText(data, "status"),
+            nullableText(data, "errorMessage"), LocalDateTime.parse(requiredText(data, "operateTime"))
+        );
     }
 
     private void projectExam(JsonNode data) {

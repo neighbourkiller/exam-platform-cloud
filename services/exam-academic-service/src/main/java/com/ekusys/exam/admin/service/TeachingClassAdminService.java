@@ -47,12 +47,8 @@ public class TeachingClassAdminService {
 
     @Transactional
     public Long createTeachingClass(TeachingClassCreateRequest request) {
+        validateCreateTeachingClass(request);
         String status = normalizeText(request.getStatus());
-        ensureTeachingClassRelation(request.getSubjectId(), request.getTeacherId());
-
-        if (request.getId() != null && teachingClassMapper.selectById(request.getId()) != null) {
-            throw new BusinessException("教学班ID已存在");
-        }
 
         TeachingClass teachingClass = new TeachingClass();
         teachingClass.setId(request.getId());
@@ -68,11 +64,8 @@ public class TeachingClassAdminService {
 
     @Transactional
     public void updateTeachingClass(Long id, TeachingClassUpdateRequest request) {
+        validateUpdateTeachingClass(id, request);
         TeachingClass teachingClass = teachingClassMapper.selectById(id);
-        if (teachingClass == null) {
-            throw new BusinessException("教学班不存在");
-        }
-        ensureTeachingClassRelation(request.getSubjectId(), request.getTeacherId());
 
         String status = normalizeText(request.getStatus());
         teachingClass.setName(normalizeText(request.getName()));
@@ -82,6 +75,20 @@ public class TeachingClassAdminService {
         teachingClass.setStatus(status == null ? "ONGOING" : status);
         teachingClass.setCapacity(request.getCapacity());
         teachingClassMapper.updateById(teachingClass);
+    }
+
+    public void validateCreateTeachingClass(TeachingClassCreateRequest request) {
+        ensureTeachingClassRelation(request.getSubjectId(), request.getTeacherId());
+        if (request.getId() != null && teachingClassMapper.selectById(request.getId()) != null) {
+            throw new BusinessException("教学班ID已存在");
+        }
+    }
+
+    public void validateUpdateTeachingClass(Long id, TeachingClassUpdateRequest request) {
+        if (teachingClassMapper.selectById(id) == null) {
+            throw new BusinessException("教学班不存在");
+        }
+        ensureTeachingClassRelation(request.getSubjectId(), request.getTeacherId());
     }
 
     public List<TeachingClassView> toTeachingClassViews(List<TeachingClass> classes) {

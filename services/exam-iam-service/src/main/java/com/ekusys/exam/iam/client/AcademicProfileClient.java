@@ -15,6 +15,9 @@ public interface AcademicProfileClient {
     @PostMapping("/internal/v1/academic/users/{id}/profile")
     ApiResponse<Void> synchronize(@PathVariable("id") Long id, @RequestBody AcademicUserProfileCommand command);
 
+    @PostMapping("/internal/v1/academic/users/profile/validate")
+    ApiResponse<Void> validate(@RequestBody AcademicUserProfileCommand command);
+
     @DeleteMapping("/internal/v1/academic/users/{id}/profile")
     ApiResponse<Void> delete(@PathVariable("id") Long id);
 

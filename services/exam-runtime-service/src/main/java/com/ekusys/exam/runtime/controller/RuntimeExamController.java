@@ -1,6 +1,7 @@
 package com.ekusys.exam.runtime.controller;
 
 import com.ekusys.exam.common.api.ApiResponse;
+import com.ekusys.exam.common.audit.AuditOperation;
 import com.ekusys.exam.exam.dto.AntiCheatEventRequest;
 import com.ekusys.exam.exam.dto.AntiCheatEvidenceUploadView;
 import com.ekusys.exam.exam.dto.ProctoringDispositionRequest;
@@ -100,6 +101,8 @@ public class RuntimeExamController {
 
     @PutMapping("/{id}/proctoring/students/{studentId}/disposition")
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
+    @AuditOperation(action = "PROCTORING_DISPOSITION_UPDATE", targetType = "PROCTORING_DISPOSITION",
+        targetId = "#id + ':' + #studentId", detail = "#request.status")
     public ApiResponse<ProctoringDispositionView> disposition(@PathVariable Long id, @PathVariable Long studentId,
                                                                @Valid @RequestBody ProctoringDispositionRequest request) {
         return ApiResponse.ok("处置记录已保存", proctoring.updateDisposition(id, studentId, request));

@@ -3,9 +3,11 @@ package com.ekusys.exam.academic;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.openfeign.EnableFeignClients;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.mybatis.spring.annotation.MapperScan;
 
 @EnableFeignClients
+@EnableScheduling
 @MapperScan("com.ekusys.exam.repository.mapper")
 @SpringBootApplication(scanBasePackages = "com.ekusys.exam")
 public class AcademicApplication {

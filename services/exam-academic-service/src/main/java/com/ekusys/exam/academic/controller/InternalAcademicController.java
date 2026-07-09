@@ -4,6 +4,8 @@ import com.ekusys.exam.academic.api.ClassRosterView;
 import com.ekusys.exam.academic.api.SubjectSummary;
 import com.ekusys.exam.academic.api.AcademicUserProfileCommand;
 import com.ekusys.exam.academic.api.AcademicUserSummary;
+import com.ekusys.exam.academic.api.TeachingClassBatchRequest;
+import com.ekusys.exam.academic.api.TeachingClassSummary;
 import com.ekusys.exam.academic.service.AcademicUserProfileService;
 import com.ekusys.exam.common.api.ApiResponse;
 import com.ekusys.exam.repository.entity.StudentTeachingClass;
@@ -46,9 +48,30 @@ public class InternalAcademicController {
             .stream().map(StudentTeachingClass::getStudentId).toList();
         return ApiResponse.ok(new ClassRosterView(id,c.getName(),c.getSubjectId(),c.getTeacherId(),students,0));
     }
+    @PostMapping("/classes/summaries") public ApiResponse<List<TeachingClassSummary>> classSummaries(
+        @RequestBody TeachingClassBatchRequest request) {
+        List<Long> ids = request == null || request.classIds() == null
+            ? List.of() : request.classIds().stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) return ApiResponse.ok(List.of());
+        List<TeachingClass> classes = classMapper.selectBatchIds(ids);
+        List<Long> subjectIds = classes.stream().map(TeachingClass::getSubjectId)
+            .filter(java.util.Objects::nonNull).distinct().toList();
+        java.util.Map<Long, Subject> subjects = subjectIds.isEmpty() ? java.util.Map.of()
+            : subjectMapper.selectBatchIds(subjectIds).stream()
+                .collect(java.util.stream.Collectors.toMap(Subject::getId, item -> item));
+        return ApiResponse.ok(classes.stream().map(item -> new TeachingClassSummary(
+            item.getId(), item.getName(), item.getSubjectId(),
+            subjects.get(item.getSubjectId()) == null ? null : subjects.get(item.getSubjectId()).getName(),
+            item.getTeacherId(), item.getTerm(), item.getStatus(), item.getCapacity()
+        )).toList());
+    }
     @PostMapping("/users/{id}/profile") public ApiResponse<Void> synchronizeProfile(@PathVariable Long id,
                                                                                      @RequestBody AcademicUserProfileCommand command) {
         profileService.synchronize(id, command); return ApiResponse.ok(null);
+    }
+    @PostMapping("/users/profile/validate") public ApiResponse<Void> validateProfile(
+        @RequestBody AcademicUserProfileCommand command) {
+        profileService.validate(null, command); return ApiResponse.ok(null);
     }
     @DeleteMapping("/users/{id}/profile") public ApiResponse<Void> deleteProfile(@PathVariable Long id) {
         profileService.delete(id); return ApiResponse.ok(null);

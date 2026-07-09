@@ -20,6 +20,8 @@ management:
       exposure:
         include: health,info,metrics
 exam:
+  audit:
+    publish-delay-ms: ${AUDIT_PUBLISH_DELAY_MS:1000}
   security:
     jwt:
       issuer: exam-system

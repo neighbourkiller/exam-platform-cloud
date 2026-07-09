@@ -19,6 +19,10 @@
         </dependency>
         <dependency>
             <groupId>com.ekusys</groupId>
+            <artifactId>exam-audit-support</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.ekusys</groupId>
             <artifactId>exam-runtime-api</artifactId>
         </dependency>
         <dependency>

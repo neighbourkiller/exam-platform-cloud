@@ -1,6 +1,7 @@
 package com.ekusys.exam.management.controller;
 
 import com.ekusys.exam.common.api.ApiResponse;
+import com.ekusys.exam.common.audit.AuditOperation;
 import com.ekusys.exam.common.exception.BusinessException;
 import com.ekusys.exam.management.dto.BulkExamOperationRequest;
 import com.ekusys.exam.management.service.ExamManagementService;
@@ -22,6 +23,7 @@ public class AdminExamBatchController {
     }
 
     @PostMapping("/batch")
+    @AuditOperation(action = "BULK_EXAM_OPERATION", targetType = "EXAM", targetId = "'bulk'", detail = "#request.action")
     public ApiResponse<Void> operate(@Valid @RequestBody BulkExamOperationRequest request) {
         String action = request.action().trim().toUpperCase();
         for (Long id : request.examIds().stream().distinct().toList()) {

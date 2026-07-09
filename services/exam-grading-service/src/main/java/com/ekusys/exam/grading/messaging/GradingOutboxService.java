@@ -95,7 +95,7 @@ public class GradingOutboxService {
     @Transactional
     public void publishPending() {
         List<OutboxRow> rows = jdbc.query(
-            "select id,event_type,payload_json from outbox_event where status='PENDING' and (next_retry_time is null or next_retry_time<=current_timestamp(3)) order by created_at limit 100",
+            "select id,event_type,payload_json from outbox_event where status='PENDING' and event_type<>'AuditOperationRecorded' and (next_retry_time is null or next_retry_time<=current_timestamp(3)) order by created_at limit 100",
             (rs, rowNum) -> new OutboxRow(rs.getString("id"), rs.getString("event_type"), rs.getString("payload_json"))
         );
         for (OutboxRow row : rows) {

@@ -27,6 +27,8 @@
     <modules>
         <module>platform/exam-common-core</module>
         <module>platform/exam-common-security</module>
+        <module>platform/exam-audit-support</module>
+        <module>platform/exam-csv-import-support</module>
         <module>apis/exam-iam-api</module>
         <module>apis/exam-academic-api</module>
         <module>apis/exam-content-api</module>
@@ -76,6 +78,16 @@
             <dependency>
                 <groupId>com.ekusys</groupId>
                 <artifactId>exam-common-security</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.ekusys</groupId>
+                <artifactId>exam-audit-support</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.ekusys</groupId>
+                <artifactId>exam-csv-import-support</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

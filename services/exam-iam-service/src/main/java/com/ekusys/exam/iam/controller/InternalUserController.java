@@ -31,6 +31,12 @@ public class InternalUserController {
         return ApiResponse.ok(toSummary(userMapper.selectById(id)));
     }
 
+    @GetMapping("/by-username")
+    public ApiResponse<UserSummary> byUsername(@RequestParam String username) {
+        User user = userMapper.selectByUsername(username);
+        return ApiResponse.ok(toSummary(user));
+    }
+
     @PostMapping("/batch")
     public ApiResponse<List<UserSummary>> batch(@RequestBody UserBatchRequest request) {
         List<Long> ids = request == null || request.userIds() == null ? List.of() : request.userIds();

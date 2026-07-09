@@ -15,4 +15,7 @@ public interface UserMapper extends BaseMapper<User> {
 
     @Select("select u.id from sys_user u inner join sys_user_role ur on ur.user_id=u.id inner join sys_role r on r.id=ur.role_id where r.code=#{roleCode} and u.enabled=1 order by u.username,u.id")
     List<Long> selectIdsByRoleCode(@Param("roleCode") String roleCode);
+
+    @Select("select * from sys_user where username=#{username} limit 1")
+    User selectByUsername(@Param("username") String username);
 }

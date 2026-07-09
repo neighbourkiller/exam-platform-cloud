@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.stereotype.Service;
@@ -25,13 +26,15 @@ public class AcademicUserProfileService {
 
     @Transactional
     public void synchronize(Long userId, AcademicUserProfileCommand command) {
+        validate(userId, command);
         List<String> roles = command.roleCodes() == null ? List.of() : command.roleCodes();
         if (roles.contains("STUDENT")) {
             jdbc.update(
                 """
                     insert into student_profile(id,user_id,student_no,enrollment_year,status,create_time,update_time)
                     values(?,?,?,?,'ACTIVE',current_timestamp(3),current_timestamp(3))
-                    on duplicate key update student_no=values(student_no),enrollment_year=values(enrollment_year),
+                    on duplicate key update student_no=coalesce(values(student_no),student_no),
+                        enrollment_year=coalesce(values(enrollment_year),enrollment_year),
                         status='ACTIVE',update_time=current_timestamp(3)
                     """,
                 IdWorker.getId(), userId, blankToNull(command.studentNo()), blankToNull(command.enrollmentYear())
@@ -44,14 +47,61 @@ public class AcademicUserProfileService {
         if (roles.contains("TEACHER")) {
             jdbc.update(
                 """
-                    insert into teacher_profile(id,user_id,status,create_time,update_time)
-                    values(?,?,'ACTIVE',current_timestamp(3),current_timestamp(3))
-                    on duplicate key update status='ACTIVE',update_time=current_timestamp(3)
+                    insert into teacher_profile(id,user_id,teacher_no,title,status,create_time,update_time)
+                    values(?,?,?,?,'ACTIVE',current_timestamp(3),current_timestamp(3))
+                    on duplicate key update teacher_no=coalesce(values(teacher_no),teacher_no),
+                        title=coalesce(values(title),title),status='ACTIVE',update_time=current_timestamp(3)
                     """,
-                IdWorker.getId(), userId
+                IdWorker.getId(), userId, blankToNull(command.teacherNo()), blankToNull(command.title())
             );
         } else {
             jdbc.update("delete from teacher_profile where user_id=?", userId);
+        }
+    }
+
+    public void validate(Long userId, AcademicUserProfileCommand command) {
+        List<String> roles = command.roleCodes() == null ? List.of() : command.roleCodes();
+        if (roles.contains("STUDENT")) {
+            String studentNo = blankToNull(command.studentNo());
+            if (studentNo != null) {
+                Integer count = userId == null
+                    ? jdbc.queryForObject("select count(*) from student_profile where student_no=?", Integer.class, studentNo)
+                    : jdbc.queryForObject(
+                        "select count(*) from student_profile where student_no=? and user_id<>?",
+                        Integer.class, studentNo, userId
+                    );
+                if (count != null && count > 0) {
+                    throw new BusinessException("学号已存在");
+                }
+            }
+            validateStudentClasses(command.teachingClassIds());
+        } else if (command.teachingClassIds() != null && !command.teachingClassIds().isEmpty()) {
+            throw new BusinessException("仅学生角色可分配教学班");
+        }
+    }
+
+    private void validateStudentClasses(List<Long> classIds) {
+        if (classIds == null || classIds.isEmpty()) {
+            return;
+        }
+        List<Long> ids = classIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            throw new BusinessException("存在无效教学班ID");
+        }
+        if (ids.size() != classIds.stream().filter(java.util.Objects::nonNull).count()) {
+            throw new BusinessException("教学班ID不能重复");
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        List<Long> subjectIds = jdbc.queryForList(
+            "select subject_id from teaching_class where id in (" + placeholders + ")",
+            Long.class,
+            ids.toArray()
+        );
+        if (subjectIds.size() != ids.size()) {
+            throw new BusinessException("存在无效教学班ID");
+        }
+        if (new HashSet<>(subjectIds).size() != subjectIds.size()) {
+            throw new BusinessException("同一课程仅可分配一个教学班");
         }
     }
 

@@ -92,8 +92,16 @@ public class IamAdminService {
         );
         replaceRoles(userId, request.getRoleIds());
         academic.synchronize(userId, new AcademicUserProfileCommand(roleCodes, request.getStudentNo(),
-            request.getEnrollmentYear(), request.getTeachingClassIds()));
+            request.getEnrollmentYear(), request.getTeachingClassIds(), request.getTeacherNo(), request.getTitle()));
         return userId;
+    }
+
+    public void validateCreateUser(UserCreateRequest request) {
+        ensureUsernameAvailable(request.getUsername());
+        resolvePassword(request.getPassword());
+        List<String> roleCodes = validateRoles(request.getRoleIds());
+        academic.validate(new AcademicUserProfileCommand(roleCodes, request.getStudentNo(),
+            request.getEnrollmentYear(), request.getTeachingClassIds(), request.getTeacherNo(), request.getTitle()));
     }
 
     @Transactional
@@ -103,7 +111,7 @@ public class IamAdminService {
         jdbc.update("update sys_user set real_name=?,enabled=?,token_version=token_version+1,update_time=current_timestamp(3) where id=?",
             request.getRealName().trim(), enabled, userId);
         academic.synchronize(userId, new AcademicUserProfileCommand(roleCodes(userId), request.getStudentNo(),
-            request.getEnrollmentYear(), request.getTeachingClassIds()));
+            request.getEnrollmentYear(), request.getTeachingClassIds(), null, null));
     }
 
     @Transactional
@@ -127,7 +135,7 @@ public class IamAdminService {
         List<String> roleCodes = validateRoles(roleIds);
         replaceRoles(userId, roleIds);
         jdbc.update("update sys_user set token_version=token_version+1,update_time=current_timestamp(3) where id=?", userId);
-        academic.synchronize(userId, new AcademicUserProfileCommand(roleCodes, null, null, null));
+        academic.synchronize(userId, new AcademicUserProfileCommand(roleCodes, null, null, null, null, null));
     }
 
     public List<RoleView> listRoles() {
@@ -159,11 +167,12 @@ public class IamAdminService {
                 case "ASSIGN_ROLES" -> {
                     assignRoles(id, request.roleIds());
                     if (request.teachingClassIds() != null) {
-                        academic.synchronize(id, new AcademicUserProfileCommand(roleCodes(id), null, null, request.teachingClassIds()));
+                        academic.synchronize(id, new AcademicUserProfileCommand(
+                            roleCodes(id), null, null, request.teachingClassIds(), null, null));
                     }
                 }
                 case "ASSIGN_CLASSES" -> academic.synchronize(id,
-                    new AcademicUserProfileCommand(roleCodes(id), null, null, request.teachingClassIds()));
+                    new AcademicUserProfileCommand(roleCodes(id), null, null, request.teachingClassIds(), null, null));
                 default -> throw new BusinessException("不支持的批量用户操作: " + request.action());
             }
         }
