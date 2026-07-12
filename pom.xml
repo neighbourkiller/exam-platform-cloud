@@ -22,11 +22,13 @@
         <mybatis-plus.version>3.5.14</mybatis-plus.version>
         <jjwt.version>0.12.7</jjwt.version>
         <xxl-job.version>3.4.0</xxl-job.version>
+        <testcontainers.version>2.0.5</testcontainers.version>
     </properties>
 
     <modules>
         <module>platform/exam-common-core</module>
         <module>platform/exam-common-security</module>
+        <module>platform/exam-outbox-support</module>
         <module>platform/exam-audit-support</module>
         <module>platform/exam-csv-import-support</module>
         <module>apis/exam-iam-api</module>
@@ -61,6 +63,13 @@
                 <scope>import</scope>
             </dependency>
             <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
                 <groupId>com.baomidou</groupId>
                 <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
                 <version>${mybatis-plus.version}</version>
@@ -78,6 +87,11 @@
             <dependency>
                 <groupId>com.ekusys</groupId>
                 <artifactId>exam-common-security</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.ekusys</groupId>
+                <artifactId>exam-outbox-support</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

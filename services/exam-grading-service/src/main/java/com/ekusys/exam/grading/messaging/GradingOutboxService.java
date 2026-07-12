@@ -1,31 +1,22 @@
 package com.ekusys.exam.grading.messaging;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ekusys.exam.common.outbox.OutboxEventWriter;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import java.util.concurrent.TimeUnit;
 
 @Service
 public class GradingOutboxService {
-    private static final String EXCHANGE = "exam.events";
-
     private final JdbcTemplate jdbc;
-    private final RabbitTemplate rabbit;
-    private final ObjectMapper objectMapper;
+    private final OutboxEventWriter writer;
 
-    public GradingOutboxService(JdbcTemplate jdbc, RabbitTemplate rabbit, ObjectMapper objectMapper) {
+    public GradingOutboxService(JdbcTemplate jdbc, OutboxEventWriter writer) {
         this.jdbc = jdbc;
-        this.rabbit = rabbit;
-        this.objectMapper = objectMapper;
+        this.writer = writer;
     }
 
     public void gradeCompleted(Long submissionId) {
@@ -81,44 +72,11 @@ public class GradingOutboxService {
         event.put("traceId", null);
         event.put("producer", "exam-grading-service");
         event.put("data", data);
-        try {
-            jdbc.update(
-                "insert into outbox_event(id,aggregate_type,aggregate_id,event_type,payload_json,status,created_at) values(?,'GRADE',?,'GradeCompleted',?,'PENDING',current_timestamp(3))",
-                eventId, aggregateId, objectMapper.writeValueAsString(event)
-            );
-        } catch (Exception exception) {
-            throw new IllegalStateException("成绩事件序列化失败", exception);
-        }
-    }
-
-    @Scheduled(fixedDelayString = "${app.outbox.publish-delay-ms:1000}")
-    @Transactional
-    public void publishPending() {
-        List<OutboxRow> rows = jdbc.query(
-            "select id,event_type,payload_json from outbox_event where status='PENDING' and event_type<>'AuditOperationRecorded' and (next_retry_time is null or next_retry_time<=current_timestamp(3)) order by created_at limit 100",
-            (rs, rowNum) -> new OutboxRow(rs.getString("id"), rs.getString("event_type"), rs.getString("payload_json"))
-        );
-        for (OutboxRow row : rows) {
-            try {
-                CorrelationData correlation = new CorrelationData(row.id());
-                rabbit.convertAndSend(EXCHANGE, row.eventType(), row.payload(), correlation);
-                CorrelationData.Confirm confirm = correlation.getFuture().get(3, TimeUnit.SECONDS);
-                if (!confirm.ack()) throw new IllegalStateException("RabbitMQ rejected event: " + confirm.reason());
-                if (correlation.getReturned() != null) {
-                    throw new IllegalStateException("RabbitMQ returned event: " + correlation.getReturned());
-                }
-                jdbc.update("update outbox_event set status='PUBLISHED',published_at=current_timestamp(3) where id=?", row.id());
-            } catch (Exception exception) {
-                jdbc.update("update outbox_event set retry_count=retry_count+1,next_retry_time=current_timestamp(3)+interval 5 second where id=?", row.id());
-            }
-        }
+        writer.append(eventId, "GRADE", aggregateId, "GradeCompleted", event);
     }
 
     private record GradeRow(Long submissionId, Long examId, Long studentId, String examName,
                             LocalDateTime submittedAt, int objectiveScore, int subjectiveScore,
                             int totalScore, boolean passFlag, String status, LocalDateTime completedAt) {
-    }
-
-    private record OutboxRow(String id, String eventType, String payload) {
     }
 }

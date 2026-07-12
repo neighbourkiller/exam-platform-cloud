@@ -7,6 +7,7 @@
         <dependency><groupId>com.ekusys</groupId><artifactId>exam-common-core</artifactId></dependency>
         <dependency><groupId>com.ekusys</groupId><artifactId>exam-common-security</artifactId></dependency>
         <dependency><groupId>com.ekusys</groupId><artifactId>exam-audit-support</artifactId></dependency>
+        <dependency><groupId>com.ekusys</groupId><artifactId>exam-outbox-support</artifactId></dependency>
         <dependency><groupId>com.ekusys</groupId><artifactId>exam-runtime-api</artifactId></dependency>
         <dependency><groupId>com.ekusys</groupId><artifactId>exam-content-api</artifactId></dependency>
         <dependency><groupId>com.ekusys</groupId><artifactId>exam-iam-api</artifactId></dependency>

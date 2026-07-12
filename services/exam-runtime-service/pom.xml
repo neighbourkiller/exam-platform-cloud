@@ -23,6 +23,10 @@
         </dependency>
         <dependency>
             <groupId>com.ekusys</groupId>
+            <artifactId>exam-outbox-support</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.ekusys</groupId>
             <artifactId>exam-runtime-api</artifactId>
         </dependency>
         <dependency>

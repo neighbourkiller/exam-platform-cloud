@@ -19,9 +19,25 @@ management:
     web:
       exposure:
         include: health,info,metrics
+app:
+  outbox:
+    enabled: ${OUTBOX_ENABLED:true}
+    exchange: ${OUTBOX_EXCHANGE:exam.events}
+    publish-delay-ms: ${OUTBOX_PUBLISH_DELAY_MS:${AUDIT_PUBLISH_DELAY_MS:1000}}
+    batch-size: ${OUTBOX_BATCH_SIZE:20}
+    worker-count: ${OUTBOX_WORKER_COUNT:4}
+    lease-duration-ms: ${OUTBOX_LEASE_DURATION_MS:60000}
+    confirm-timeout-ms: ${OUTBOX_CONFIRM_TIMEOUT_MS:3000}
+    max-attempts: ${OUTBOX_MAX_ATTEMPTS:12}
+    backoff-initial-ms: ${OUTBOX_BACKOFF_INITIAL_MS:5000}
+    backoff-multiplier: ${OUTBOX_BACKOFF_MULTIPLIER:2.0}
+    backoff-max-ms: ${OUTBOX_BACKOFF_MAX_MS:300000}
+    backoff-jitter: ${OUTBOX_BACKOFF_JITTER:0.2}
+    cleanup-delay-ms: ${OUTBOX_CLEANUP_DELAY_MS:3600000}
+    published-retention-ms: ${OUTBOX_PUBLISHED_RETENTION_MS:604800000}
+    cleanup-batch-size: ${OUTBOX_CLEANUP_BATCH_SIZE:500}
+    cleanup-max-batches: ${OUTBOX_CLEANUP_MAX_BATCHES:10}
 exam:
-  audit:
-    publish-delay-ms: ${AUDIT_PUBLISH_DELAY_MS:1000}
   security:
     jwt:
       issuer: exam-system
