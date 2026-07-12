@@ -72,6 +72,9 @@ public class AuditOutboxService {
                 if (!confirm.ack()) {
                     throw new IllegalStateException("RabbitMQ rejected audit event: " + confirm.reason());
                 }
+                if (correlation.getReturned() != null) {
+                    throw new IllegalStateException("RabbitMQ returned audit event: " + correlation.getReturned());
+                }
                 jdbc.update(
                     "update outbox_event set status='PUBLISHED',published_at=current_timestamp(3) "
                         + "where id=? and status='PENDING'",

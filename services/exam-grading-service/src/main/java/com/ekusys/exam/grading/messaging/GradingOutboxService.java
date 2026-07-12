@@ -104,6 +104,9 @@ public class GradingOutboxService {
                 rabbit.convertAndSend(EXCHANGE, row.eventType(), row.payload(), correlation);
                 CorrelationData.Confirm confirm = correlation.getFuture().get(3, TimeUnit.SECONDS);
                 if (!confirm.ack()) throw new IllegalStateException("RabbitMQ rejected event: " + confirm.reason());
+                if (correlation.getReturned() != null) {
+                    throw new IllegalStateException("RabbitMQ returned event: " + correlation.getReturned());
+                }
                 jdbc.update("update outbox_event set status='PUBLISHED',published_at=current_timestamp(3) where id=?", row.id());
             } catch (Exception exception) {
                 jdbc.update("update outbox_event set retry_count=retry_count+1,next_retry_time=current_timestamp(3)+interval 5 second where id=?", row.id());

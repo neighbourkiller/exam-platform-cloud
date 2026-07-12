@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import com.ekusys.exam.common.api.ApiResponse;
+import com.ekusys.exam.common.web.ClientIpUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
@@ -36,7 +37,8 @@ class OperationAuditAspectTest {
         AuditOutboxService outbox = mock(AuditOutboxService.class);
         AuditedTarget target = proxy(outbox);
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/items");
-        request.addHeader("X-Forwarded-For", "10.0.0.8, 10.0.0.9");
+        request.addHeader(ClientIpUtils.CLIENT_IP_HEADER, "10.0.0.8");
+        request.addHeader("X-Forwarded-For", "203.0.113.99");
         RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
         Jwt jwt = new Jwt("token", Instant.now(), Instant.now().plusSeconds(60),
             java.util.Map.of("alg", "none"), java.util.Map.of("sub", "admin", "uid", 7L));

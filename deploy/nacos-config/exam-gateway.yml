@@ -3,6 +3,10 @@ spring:
     gateway:
       server:
         webflux:
+          forwarded:
+            enabled: false
+          x-forwarded:
+            for-enabled: false
           globalcors:
             add-to-simple-url-handler-mapping: true
             cors-configurations:
@@ -25,4 +29,16 @@ spring:
             - { id: grading, uri: "lb://exam-grading-service", predicates: ["Path=/api/v1/grading/**"] }
             - { id: management-publish, uri: "lb://exam-management-service", predicates: ["Path=/api/v1/exams/*/publish,/api/v1/exams/*/terminate,/api/v1/exams/teacher,/api/v1/admin/exam-schedules/**,/api/v1/admin/exams/batch"] }
             - { id: management-create, uri: "lb://exam-management-service", predicates: ["Path=/api/v1/exams", "Method=POST"] }
+            - id: runtime-answer-write
+              order: -10
+              uri: "lb://exam-runtime-service"
+              predicates:
+                - "Path=/api/v1/exams/*/snapshot,/api/v1/exams/*/submit"
+                - "Method=POST"
+              filters:
+                - "RequestSize=5MB"
             - { id: runtime, uri: "lb://exam-runtime-service", predicates: ["Path=/api/v1/exams/**"] }
+app:
+  gateway:
+    client-ip:
+      trusted-proxy-cidrs: ${TRUSTED_PROXY_CIDRS:}

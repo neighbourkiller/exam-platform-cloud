@@ -75,7 +75,8 @@ public class RuntimeExamController {
 
     @PostMapping("/{id}/submit")
     @PreAuthorize("hasRole('STUDENT')")
-    public ApiResponse<SubmitResultView> submit(@PathVariable Long id, @Valid @RequestBody SubmitExamRequest request) {
+    // Validation is deferred until the service confirms the session has not expired.
+    public ApiResponse<SubmitResultView> submit(@PathVariable Long id, @RequestBody SubmitExamRequest request) {
         return ApiResponse.ok("交卷成功", runtime.submit(id, request));
     }
 

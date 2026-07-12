@@ -80,10 +80,6 @@ public class AuthService {
         } catch (JwtException | IllegalArgumentException ex) {
             throw new BusinessException("无效的刷新令牌");
         }
-        if (!refreshTokenSessionService.isActive(tokenUser.getUserId(), tokenId)) {
-            throw new BusinessException("刷新令牌已失效，请重新登录");
-        }
-
         User user = userMapper.selectById(tokenUser.getUserId());
         if (user == null || Boolean.FALSE.equals(user.getEnabled())) {
             refreshTokenSessionService.revoke(tokenUser.getUserId());
@@ -96,8 +92,9 @@ public class AuthService {
             .roles(userMapper.selectRoleCodes(user.getId()))
             .tokenVersion(user.getTokenVersion() == null ? 0L : user.getTokenVersion())
             .build();
+        AuthTokens tokens = rotateTokens(latestUser, tokenId);
         log.info("Refresh token success: userId={}, username={}", latestUser.getUserId(), latestUser.getUsername());
-        return issueTokens(latestUser);
+        return tokens;
     }
 
     public MeResponse me() {
@@ -148,7 +145,8 @@ public class AuthService {
                 return;
             }
             LoginUser tokenUser = jwtTokenProvider.parseLoginUser(refreshToken);
-            refreshTokenSessionService.revoke(tokenUser.getUserId());
+            String tokenId = jwtTokenProvider.getTokenId(refreshToken);
+            refreshTokenSessionService.revoke(tokenUser.getUserId(), tokenId);
         } catch (JwtException | IllegalArgumentException ignored) {
             // Ignore invalid refresh token on logout; cookie cleanup happens at controller layer.
         }
@@ -159,6 +157,27 @@ public class AuthService {
         String refreshTokenId = UUID.randomUUID().toString();
         String refreshToken = jwtTokenProvider.createRefreshToken(user, refreshTokenId);
         refreshTokenSessionService.store(user.getUserId(), refreshTokenId, jwtTokenProvider.getExpiration(refreshToken));
+        return AuthTokens.builder()
+            .accessToken(accessToken)
+            .refreshToken(refreshToken)
+            .tokenType("Bearer")
+            .roles(user.getRoles())
+            .build();
+    }
+
+    private AuthTokens rotateTokens(LoginUser user, String currentRefreshTokenId) {
+        String accessToken = jwtTokenProvider.createAccessToken(user);
+        String refreshTokenId = UUID.randomUUID().toString();
+        String refreshToken = jwtTokenProvider.createRefreshToken(user, refreshTokenId);
+        boolean rotated = refreshTokenSessionService.rotate(
+            user.getUserId(),
+            currentRefreshTokenId,
+            refreshTokenId,
+            jwtTokenProvider.getExpiration(refreshToken)
+        );
+        if (!rotated) {
+            throw new BusinessException("刷新令牌已失效，请重新登录");
+        }
         return AuthTokens.builder()
             .accessToken(accessToken)
             .refreshToken(refreshToken)

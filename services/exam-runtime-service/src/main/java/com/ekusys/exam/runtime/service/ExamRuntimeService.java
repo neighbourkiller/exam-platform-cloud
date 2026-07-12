@@ -40,12 +40,14 @@ public class ExamRuntimeService {
     private final TimeoutSubmissionService timeoutSubmissionService;
     private final ExamSnapshotService snapshotService;
     private final ExamClientLeaseService clientLeaseService;
+    private final ExamAnswerInputValidator answerInputValidator;
 
     public ExamRuntimeService(JdbcTemplate jdbc, ManagementRuntimeClient management,
                               ObjectMapper mapper, RuntimeOutboxService outbox,
                               TimeoutSubmissionService timeoutSubmissionService,
                               ExamSnapshotService snapshotService,
-                              ExamClientLeaseService clientLeaseService) {
+                              ExamClientLeaseService clientLeaseService,
+                              ExamAnswerInputValidator answerInputValidator) {
         this.jdbc = jdbc;
         this.management = management;
         this.mapper = mapper;
@@ -53,6 +55,7 @@ public class ExamRuntimeService {
         this.timeoutSubmissionService = timeoutSubmissionService;
         this.snapshotService = snapshotService;
         this.clientLeaseService = clientLeaseService;
+        this.answerInputValidator = answerInputValidator;
     }
 
     public List<StudentExamView> listStudent() {
@@ -174,6 +177,8 @@ public class ExamRuntimeService {
         if (!now.isBefore(session.deadline())) {
             throw new BusinessException("考试作答时间已结束");
         }
+        answerInputValidator.validateAnswers(request.getAnswers());
+        answerInputValidator.validateSnapshotVersion(request, now);
         ExamClientLeaseView lease = clientLeaseService.renew(session.id(), request.getClientId(), request.getLeaseToken(), now);
         SnapshotAckView ack = snapshotService.save(
             examId, userId, session.id(), session.deadline(), now, request
@@ -196,6 +201,7 @@ public class ExamRuntimeService {
             timeoutSubmissionService.submitExpired(session.id(), examId, userId);
             return SubmitResultView.builder().submissionId(submissionId).status("PROCESSING").build();
         }
+        answerInputValidator.validateSubmitRequest(request);
         clientLeaseService.requireCurrent(session.id(), request.getClientId(), request.getLeaseToken(), now);
 
         saveAnswers(submissionId, request.getAnswers(), "SUBMIT", true);

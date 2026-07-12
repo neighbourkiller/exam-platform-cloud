@@ -2,6 +2,7 @@ package com.ekusys.exam.common.audit;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ekusys.exam.common.web.ClientIpUtils;
 import jakarta.servlet.http.HttpServletRequest;
 import java.lang.reflect.Method;
 import java.time.LocalDateTime;
@@ -171,16 +172,8 @@ public class OperationAuditAspect {
         if (request == null) {
             return null;
         }
-        String forwardedFor = request.getHeader("X-Forwarded-For");
-        if (forwardedFor != null && !forwardedFor.isBlank()) {
-            for (String value : forwardedFor.split(",")) {
-                if (!value.isBlank()) {
-                    return value.trim();
-                }
-            }
-        }
-        String realIp = request.getHeader("X-Real-IP");
-        return realIp == null || realIp.isBlank() ? request.getRemoteAddr() : realIp.trim();
+        return ClientIpUtils.normalizeLiteral(request.getHeader(ClientIpUtils.CLIENT_IP_HEADER))
+            .orElseGet(request::getRemoteAddr);
     }
 
     private String truncate(String value, int maxLength) {

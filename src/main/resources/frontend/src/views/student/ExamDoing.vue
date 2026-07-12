@@ -153,6 +153,8 @@
                 v-model="answers[currentQuestion.questionId]"
                 type="textarea"
                 :rows="3"
+                :maxlength="MAX_ANSWER_TEXT_LENGTH"
+                show-word-limit
                 resize="none"
                 placeholder="请输入答案"
               />
@@ -216,6 +218,9 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const examId = String(route.params.id || '')
+const MAX_ANSWER_COUNT = 500
+const MAX_ANSWER_TEXT_LENGTH = 16000
+const MAX_TOTAL_ANSWER_LENGTH = 1000000
 
 const state = reactive({
   examId,
@@ -710,6 +715,25 @@ const buildSubmitPayload = () => ({
     answerText: normalizeAnswer(q)
   }))
 })
+
+const answerPayloadValidationError = (payload = {}) => {
+  const payloadAnswers = Array.isArray(payload.answers) ? payload.answers : []
+  if (!payloadAnswers.length || payloadAnswers.length > MAX_ANSWER_COUNT) {
+    return `答案数量不能超过 ${MAX_ANSWER_COUNT} 题`
+  }
+  let totalLength = 0
+  for (const answer of payloadAnswers) {
+    const answerText = String(answer?.answerText ?? '')
+    if (answerText.length > MAX_ANSWER_TEXT_LENGTH) {
+      return `单题答案不能超过 ${MAX_ANSWER_TEXT_LENGTH} 个字符`
+    }
+    totalLength += answerText.length
+    if (totalLength > MAX_TOTAL_ANSWER_LENGTH) {
+      return `整份答案不能超过 ${MAX_TOTAL_ANSWER_LENGTH} 个字符`
+    }
+  }
+  return ''
+}
 
 const hasDraftContent = (answerMap = {}) =>
   state.questions.some((question) => {
@@ -1394,6 +1418,12 @@ const flushSyncQueue = async ({ force = false } = {}) => {
     for (const item of dueItems) {
       try {
         if (item.type === 'SNAPSHOT') {
+          const validationError = answerPayloadValidationError(item.payload)
+          if (validationError) {
+            const error = new Error(validationError)
+            error.isBusinessError = true
+            throw error
+          }
           const ack = await snapshotApi(examId, withClientLeasePayload(item.payload), { silent: true, timeout: 10000 })
           applyLeaseResponse(ack)
           syncState.lastSyncedAt = Math.max(Number(syncState.lastSyncedAt || 0), Number(item.payload?.snapshotVersion || item.occurredAt || 0))
@@ -1473,11 +1503,20 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
     return false
   }
 
-  syncState.syncing = true
   syncState.syncErrorAt = null
   syncState.lastSyncErrorMessage = ''
   const syncVersion = Math.max(syncState.updatedAt || 0, (syncState.snapshotVersion || 0) + 1, Date.now())
   const payload = buildSnapshotPayload(syncVersion)
+  const validationError = answerPayloadValidationError(payload)
+  if (validationError) {
+    syncState.syncErrorAt = Date.now()
+    syncState.lastSyncErrorMessage = validationError
+    if (notify) {
+      ElMessage.error(validationError)
+    }
+    return false
+  }
+  syncState.syncing = true
   try {
     const startedAt = Date.now()
     const ack = await snapshotApi(examId, payload, { silent: true, timeout: 10000 })
@@ -1536,6 +1575,11 @@ const submit = async (needConfirm = true) => {
       dirty: true
     })
     ElMessage.warning('考试作答时间已结束，本机未同步答案不会补交，系统将以服务端最后同步快照自动交卷。')
+    return
+  }
+  const validationError = answerPayloadValidationError(buildSubmitPayload())
+  if (validationError) {
+    ElMessage.error(validationError)
     return
   }
   if (needConfirm) {

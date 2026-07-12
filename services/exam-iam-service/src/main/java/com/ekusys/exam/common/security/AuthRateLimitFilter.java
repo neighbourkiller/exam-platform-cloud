@@ -2,6 +2,7 @@ package com.ekusys.exam.common.security;
 
 import com.ekusys.exam.auth.config.AuthRateLimitProperties;
 import com.ekusys.exam.common.api.ApiResponse;
+import com.ekusys.exam.common.web.ClientIpUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -69,21 +70,7 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
     }
 
     private String extractClientIp(HttpServletRequest request) {
-        String forwardedFor = request.getHeader("X-Forwarded-For");
-        if (forwardedFor != null && !forwardedFor.isBlank()) {
-            String[] parts = forwardedFor.split(",");
-            for (String part : parts) {
-                String candidate = part == null ? "" : part.trim();
-                if (!candidate.isEmpty()) {
-                    return candidate;
-                }
-            }
-        }
-
-        String realIp = request.getHeader("X-Real-IP");
-        if (realIp != null && !realIp.isBlank()) {
-            return realIp.trim();
-        }
-        return request.getRemoteAddr();
+        return ClientIpUtils.normalizeLiteral(request.getHeader(ClientIpUtils.CLIENT_IP_HEADER))
+            .orElseGet(request::getRemoteAddr);
     }
 }

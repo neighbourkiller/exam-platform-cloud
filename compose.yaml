@@ -65,7 +65,7 @@ services:
     depends_on: { mysql: { condition: service_healthy } }
   gateway:
     build: { context: ., args: { JAR_FILE: services/exam-gateway/target/exam-gateway-1.0.0-SNAPSHOT.jar } }
-    environment: { NACOS_SERVER_ADDR: "nacos:8848", NACOS_NAMESPACE: dev, NACOS_USERNAME: "${NACOS_USERNAME:-nacos}", NACOS_PASSWORD: "${NACOS_PASSWORD:?NACOS_PASSWORD is required}", JWT_PUBLIC_KEY_LOCATION: "/run/secrets/jwt_public_key" }
+    environment: { NACOS_SERVER_ADDR: "nacos:8848", NACOS_NAMESPACE: dev, NACOS_USERNAME: "${NACOS_USERNAME:-nacos}", NACOS_PASSWORD: "${NACOS_PASSWORD:?NACOS_PASSWORD is required}", JWT_PUBLIC_KEY_LOCATION: "/run/secrets/jwt_public_key", TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}" }
     secrets: [jwt_public_key]
     ports: ["16730:16730"]
     depends_on: [nacos]

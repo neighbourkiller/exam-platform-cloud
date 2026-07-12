@@ -21,7 +21,10 @@ public class ReportingEventConsumer {
         this.objectMapper = objectMapper;
     }
 
-    @RabbitListener(queues = ReportingRabbitConfig.QUEUE)
+    @RabbitListener(
+        queues = ReportingRabbitConfig.QUEUE,
+        containerFactory = "reportingEventsListenerContainerFactory"
+    )
     @Transactional
     public void consume(String payload) throws Exception {
         JsonNode event = objectMapper.readTree(payload);
