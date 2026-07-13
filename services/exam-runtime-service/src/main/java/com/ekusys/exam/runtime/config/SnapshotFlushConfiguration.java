@@ -1,4 +1,4 @@
-package com.ekusys.exam.common.outbox;
+package com.ekusys.exam.runtime.config;
 
 import java.util.concurrent.ThreadPoolExecutor;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -8,16 +8,16 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 @Configuration
-public class OutboxConfiguration {
+public class SnapshotFlushConfiguration {
 
     @Bean
-    @Qualifier("outboxPublisherExecutor")
-    ThreadPoolTaskExecutor outboxPublisherExecutor(OutboxProperties properties) {
+    @Qualifier("snapshotFlushExecutor")
+    ThreadPoolTaskExecutor snapshotFlushExecutor(SnapshotProperties properties) {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(properties.safeWorkerCount());
-        executor.setMaxPoolSize(properties.safeWorkerCount());
-        executor.setQueueCapacity(properties.safeBatchSize());
-        executor.setThreadNamePrefix("outbox-publisher-");
+        executor.setCorePoolSize(properties.safeFlushWorkerCount());
+        executor.setMaxPoolSize(properties.safeFlushWorkerCount());
+        executor.setQueueCapacity(properties.safeFlushBatchSize());
+        executor.setThreadNamePrefix("snapshot-flush-worker-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(10);
@@ -25,11 +25,11 @@ public class OutboxConfiguration {
     }
 
     @Bean
-    @Qualifier("outboxTaskScheduler")
-    ThreadPoolTaskScheduler outboxTaskScheduler() {
+    @Qualifier("snapshotFlushTaskScheduler")
+    ThreadPoolTaskScheduler snapshotFlushTaskScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);
-        scheduler.setThreadNamePrefix("outbox-scheduler-");
+        scheduler.setThreadNamePrefix("snapshot-flush-scheduler-");
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         scheduler.setAwaitTerminationSeconds(10);
         return scheduler;

@@ -7,21 +7,14 @@ import com.ekusys.exam.exam.dto.SnapshotRequest;
 import com.ekusys.exam.runtime.config.SnapshotProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.redis.core.RedisCallback;
-import org.springframework.data.redis.core.ScanOptions;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -29,33 +22,15 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Service
 public class ExamSnapshotService {
     private static final Logger log = LoggerFactory.getLogger(ExamSnapshotService.class);
-    private static final DefaultRedisScript<Long> SAVE_SCRIPT = new DefaultRedisScript<>("""
-        local current = redis.call('GET', KEYS[2])
-        local incoming = tonumber(ARGV[1])
-        local currentNumber = tonumber(current)
-        if currentNumber and currentNumber >= incoming then
-            return -currentNumber
-        end
-        redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
-        redis.call('SET', KEYS[2], tostring(incoming), 'PX', ARGV[3])
-        return incoming
-        """, Long.class);
-    private static final DefaultRedisScript<Long> DELETE_IF_VERSION_SCRIPT = new DefaultRedisScript<>("""
-        local current = redis.call('GET', KEYS[2])
-        if current and tostring(current) == tostring(ARGV[1]) then
-            return redis.call('DEL', KEYS[1])
-        end
-        return 0
-        """, Long.class);
 
-    private final StringRedisTemplate redis;
+    private final SnapshotFlushQueue queue;
     private final ObjectMapper objectMapper;
     private final SnapshotProperties properties;
     private final SnapshotPersistenceService persistence;
 
-    public ExamSnapshotService(StringRedisTemplate redis, ObjectMapper objectMapper,
+    public ExamSnapshotService(SnapshotFlushQueue queue, ObjectMapper objectMapper,
                                SnapshotProperties properties, SnapshotPersistenceService persistence) {
-        this.redis = redis;
+        this.queue = queue;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.persistence = persistence;
@@ -72,10 +47,8 @@ public class ExamSnapshotService {
         String json = serialize(payload);
         Long result;
         try {
-            result = redis.execute(
-                SAVE_SCRIPT,
-                List.of(snapshotKey(examId, studentId), versionKey(examId, studentId)),
-                String.valueOf(version), json, String.valueOf(resolveTtl(deadline, receivedAt).toMillis())
+            result = queue.save(
+                examId, studentId, version, json, resolveTtl(deadline, receivedAt).toMillis()
             );
         } catch (DataAccessException exception) {
             log.warn("Redis snapshot unavailable, fallback to MySQL: examId={}, studentId={}, version={}",
@@ -110,7 +83,7 @@ public class ExamSnapshotService {
     public SnapshotDraft loadLatestDraft(Long examId, Long studentId) {
         SnapshotDraft persisted = persistence.loadDraft(examId, studentId);
         try {
-            String json = redis.opsForValue().get(snapshotKey(examId, studentId));
+            String json = queue.loadPayload(examId, studentId);
             if (json == null || json.isBlank()) {
                 return persisted;
             }
@@ -135,19 +108,6 @@ public class ExamSnapshotService {
         }
     }
 
-    public void flushAll() {
-        Set<String> keys;
-        try {
-            keys = findSnapshotKeys();
-        } catch (DataAccessException exception) {
-            log.warn("Redis snapshot scan failed", exception);
-            return;
-        }
-        for (String key : keys) {
-            flushKey(key);
-        }
-    }
-
     public void clearAfterCommit(Long examId, Long studentId) {
         Runnable cleanup = () -> clear(examId, studentId);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
@@ -162,53 +122,9 @@ public class ExamSnapshotService {
         });
     }
 
-    void flushKey(String key) {
-        String[] parts = key.split(":");
-        if (parts.length != 4) {
-            return;
-        }
-        try {
-            Long examId = Long.valueOf(parts[2]);
-            Long studentId = Long.valueOf(parts[3]);
-            String json = redis.opsForValue().get(key);
-            if (json == null || json.isBlank()) {
-                return;
-            }
-            SnapshotPayload payload = objectMapper.readValue(json, SnapshotPayload.class);
-            long persistedVersion = persistence.persistDraft(
-                examId, studentId, payload.answers(), payload.snapshotVersion()
-            );
-            if (persistedVersion < 0 || persistedVersion >= payload.snapshotVersion()) {
-                deletePayloadIfVersion(examId, studentId, payload.snapshotVersion());
-            }
-        } catch (DataAccessException exception) {
-            log.warn("Snapshot flush deferred because Redis is unavailable: key={}", key, exception);
-        } catch (Exception exception) {
-            log.error("Snapshot flush failed: key={}", key, exception);
-        }
-    }
-
-    private Set<String> findSnapshotKeys() {
-        StringRedisSerializer serializer = new StringRedisSerializer(StandardCharsets.UTF_8);
-        Set<String> keys = redis.execute((RedisCallback<Set<String>>) connection -> {
-            Set<String> result = new java.util.LinkedHashSet<>();
-            ScanOptions options = ScanOptions.scanOptions().match("exam:snapshot:*").count(200).build();
-            try (var cursor = connection.scan(options)) {
-                while (cursor.hasNext()) {
-                    String key = serializer.deserialize(cursor.next());
-                    if (key != null && !key.isBlank()) {
-                        result.add(key);
-                    }
-                }
-            }
-            return result;
-        });
-        return keys == null ? Set.of() : keys;
-    }
-
     private void clear(Long examId, Long studentId) {
         try {
-            redis.delete(List.of(snapshotKey(examId, studentId), versionKey(examId, studentId)));
+            queue.clear(examId, studentId);
         } catch (DataAccessException exception) {
             log.warn("Redis snapshot cleanup failed: examId={}, studentId={}", examId, studentId, exception);
         }
@@ -216,11 +132,7 @@ public class ExamSnapshotService {
 
     private void deletePayloadIfVersion(Long examId, Long studentId, long version) {
         try {
-            redis.execute(
-                DELETE_IF_VERSION_SCRIPT,
-                List.of(snapshotKey(examId, studentId), versionKey(examId, studentId)),
-                String.valueOf(version)
-            );
+            queue.discardPayloadIfVersion(examId, studentId, version);
         } catch (DataAccessException exception) {
             log.warn("Redis snapshot conditional cleanup failed: examId={}, studentId={}, version={}",
                 examId, studentId, version, exception);
@@ -281,16 +193,4 @@ public class ExamSnapshotService {
         }
     }
 
-    private String snapshotKey(Long examId, Long studentId) {
-        return "exam:snapshot:" + examId + ":" + studentId;
-    }
-
-    private String versionKey(Long examId, Long studentId) {
-        return "exam:snapshot-version:" + examId + ":" + studentId;
-    }
-
-    private record SnapshotPayload(Long examId, Long studentId, List<AnswerPayload> answers,
-                                   Long clientTimestamp, long snapshotVersion,
-                                   String serverReceivedAt) {
-    }
 }

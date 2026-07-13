@@ -6,6 +6,19 @@ app:
   snapshot:
     flush-interval-ms: ${APP_SNAPSHOT_FLUSH_INTERVAL_MS:30000}
     ttl-hours: ${APP_SNAPSHOT_TTL_HOURS:48}
+    flush-batch-size: ${APP_SNAPSHOT_FLUSH_BATCH_SIZE:100}
+    flush-worker-count: ${APP_SNAPSHOT_FLUSH_WORKER_COUNT:4}
+    flush-lease-ms: ${APP_SNAPSHOT_FLUSH_LEASE_MS:60000}
+    flush-backoff-initial-ms: ${APP_SNAPSHOT_FLUSH_BACKOFF_INITIAL_MS:5000}
+    flush-backoff-multiplier: ${APP_SNAPSHOT_FLUSH_BACKOFF_MULTIPLIER:2.0}
+    flush-backoff-max-ms: ${APP_SNAPSHOT_FLUSH_BACKOFF_MAX_MS:300000}
+    flush-backoff-jitter: ${APP_SNAPSHOT_FLUSH_BACKOFF_JITTER:0.2}
+    flush-max-attempts: ${APP_SNAPSHOT_FLUSH_MAX_ATTEMPTS:12}
+    flush-reconcile-interval-ms: ${APP_SNAPSHOT_FLUSH_RECONCILE_INTERVAL_MS:300000}
+    flush-reconcile-scan-count: ${APP_SNAPSHOT_FLUSH_RECONCILE_SCAN_COUNT:200}
+    flush-failed-retention-hours: ${APP_SNAPSHOT_FLUSH_FAILED_RETENTION_HOURS:168}
+    flush-cleanup-interval-ms: ${APP_SNAPSHOT_FLUSH_CLEANUP_INTERVAL_MS:3600000}
+    flush-cleanup-batch-size: ${APP_SNAPSHOT_FLUSH_CLEANUP_BATCH_SIZE:100}
   minio:
     endpoint: ${MINIO_ENDPOINT:http://minio:9000}
     access-key: ${MINIO_ACCESS_KEY:}

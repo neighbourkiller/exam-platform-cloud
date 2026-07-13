@@ -42,7 +42,10 @@ public class OutboxPublisher {
         rabbitTemplate.setMandatory(true);
     }
 
-    @Scheduled(fixedDelayString = "${app.outbox.publish-delay-ms:1000}")
+    @Scheduled(
+        fixedDelayString = "${app.outbox.publish-delay-ms:1000}",
+        scheduler = "outboxTaskScheduler"
+    )
     public void publishPending() {
         OutboxClaimBatch batch = repository.claimBatch();
         increment("lease_recovered", batch.recoveredForRetry());
@@ -56,7 +59,8 @@ public class OutboxPublisher {
 
     @Scheduled(
         fixedDelayString = "${app.outbox.cleanup-delay-ms:3600000}",
-        initialDelayString = "${app.outbox.cleanup-delay-ms:3600000}"
+        initialDelayString = "${app.outbox.cleanup-delay-ms:3600000}",
+        scheduler = "outboxTaskScheduler"
     )
     public void cleanupPublished() {
         int deleted = 0;

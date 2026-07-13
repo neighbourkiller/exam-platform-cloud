@@ -5,14 +5,35 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class SnapshotFlushScheduler {
-    private final ExamSnapshotService snapshotService;
+    private final SnapshotFlushCoordinator coordinator;
 
-    public SnapshotFlushScheduler(ExamSnapshotService snapshotService) {
-        this.snapshotService = snapshotService;
+    public SnapshotFlushScheduler(SnapshotFlushCoordinator coordinator) {
+        this.coordinator = coordinator;
     }
 
-    @Scheduled(fixedDelayString = "${app.snapshot.flush-interval-ms:30000}")
+    @Scheduled(
+        fixedDelayString = "${app.snapshot.flush-interval-ms:30000}",
+        scheduler = "snapshotFlushTaskScheduler"
+    )
     public void flushSnapshots() {
-        snapshotService.flushAll();
+        coordinator.flushDue();
+    }
+
+    @Scheduled(
+        fixedDelayString = "${app.snapshot.flush-reconcile-interval-ms:300000}",
+        initialDelayString = "${app.snapshot.flush-reconcile-interval-ms:300000}",
+        scheduler = "snapshotFlushTaskScheduler"
+    )
+    public void reconcileSnapshots() {
+        coordinator.reconcile();
+    }
+
+    @Scheduled(
+        fixedDelayString = "${app.snapshot.flush-cleanup-interval-ms:3600000}",
+        initialDelayString = "${app.snapshot.flush-cleanup-interval-ms:3600000}",
+        scheduler = "snapshotFlushTaskScheduler"
+    )
+    public void cleanupFailedSnapshots() {
+        coordinator.cleanupFailed();
     }
 }

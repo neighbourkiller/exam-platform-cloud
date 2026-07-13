@@ -13,6 +13,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 class OutboxContextTest {
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
@@ -29,6 +30,9 @@ class OutboxContextTest {
             assertThat(context).hasSingleBean(OutboxPublisher.class);
             assertThat(context).hasSingleBean(OutboxEventWriter.class);
             assertThat(context).hasSingleBean(OutboxRepository.class);
+            assertThat(context).hasBean("outboxTaskScheduler");
+            assertThat(context.getBean("outboxTaskScheduler", ThreadPoolTaskScheduler.class))
+                .isNotSameAs(context.getBean("outboxPublisherExecutor"));
         });
     }
 
