@@ -1,5 +1,5 @@
 #!/bin/sh
-set -eu
+set -e
 
 if [ -z "${EXAM_DB_PASSWORD:-}" ]; then
   echo "EXAM_DB_PASSWORD is required" >&2

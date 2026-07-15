@@ -22,12 +22,13 @@ services:
       XXL_JOB_ADMIN_PASSWORD: "${XXL_JOB_ADMIN_PASSWORD:?XXL_JOB_ADMIN_PASSWORD is required}"
       EXAM_DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
       NACOS_PASSWORD_HASH: "${NACOS_PASSWORD_HASH:?NACOS_PASSWORD_HASH is required}"
-    ports: ["13306:3306"]
+      APP_DEFAULT_PASSWORD_HASH: "${APP_DEFAULT_PASSWORD_HASH:?APP_DEFAULT_PASSWORD_HASH is required}"
+    ports: ["23306:3306"]
     volumes: ["mysql-data:/var/lib/mysql", "./deploy/mysql/init:/docker-entrypoint-initdb.d:ro"]
     healthcheck: { test: ["CMD-SHELL", "mysqladmin ping -h localhost -p\"$$MYSQL_ROOT_PASSWORD\""], interval: 5s, timeout: 3s, retries: 30 }
   redis:
     image: redis:7.4-alpine
-    ports: ["16379:6379"]
+    ports: ["26379:6379"]
     volumes: ["redis-data:/data"]
   rabbitmq:
     image: rabbitmq:4.1-management
@@ -38,7 +39,7 @@ services:
     image: minio/minio:latest
     command: server /data --console-address :9001
     environment: { MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}", MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}" }
-    ports: ["19000:9000", "19001:9001"]
+    ports: ["29000:9000", "29001:9001"]
     volumes: ["minio-data:/data"]
   nacos:
     image: nacos/nacos-server:v3.1.1
@@ -77,6 +78,7 @@ services:
       DB_USERNAME: exam_iam
       DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
       JWT_PRIVATE_KEY_LOCATION: "/run/secrets/jwt_private_key"
+      APP_DEFAULT_PASSWORD: "${APP_DEFAULT_PASSWORD:?APP_DEFAULT_PASSWORD is required}"
     depends_on: { mysql: { condition: service_healthy }, nacos: { condition: service_started } }
   academic-service:
     build: { context: ., args: { JAR_FILE: services/exam-academic-service/target/exam-academic-service-1.0.0-SNAPSHOT.jar } }
@@ -116,10 +118,10 @@ services:
     secrets: [jwt_public_key]
     depends_on: { mysql: { condition: service_healthy }, nacos: { condition: service_started } }
 volumes:
-  mysql-data: { name: mysql-data }
-  redis-data: { name: redis-data }
-  rabbitmq-data: { name: rabbitmq-data }
-  minio-data: { name: minio_exam_data }
+  mysql-data: { name: exam-platform-cloud-mysql-data }
+  redis-data: { name: exam-platform-cloud-redis-data }
+  rabbitmq-data: { name: exam-platform-cloud-rabbitmq-data }
+  minio-data: { name: exam-platform-cloud-minio-data }
 secrets:
   jwt_private_key:
     file: ./deploy/secrets/jwt-private.pem

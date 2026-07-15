@@ -1,5 +1,5 @@
 #!/bin/sh
-set -eu
+set -e
 
 if [ -z "${XXL_JOB_ADMIN_PASSWORD:-}" ]; then
   echo "XXL_JOB_ADMIN_PASSWORD is required" >&2

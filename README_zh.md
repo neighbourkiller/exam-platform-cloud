@@ -82,43 +82,53 @@ exam/
 - **Node.js 18+** 和 npm
 - **Docker** 与 **Docker Compose**
 
-### 1. 生成 JWT 签名密钥对
+### 1. WSL Ubuntu 一键启动
 
-统一认证服务采用非对称 RS256 JWT 令牌。在启动 Docker 容器服务之前，必须生成公私钥对：
-
-在 Windows 环境下 (PowerShell):
-```powershell
-./deploy/generate-dev-secrets.ps1
-```
-
-执行后将在 `deploy/secrets/` 下生成密钥文件，并在后续通过 Docker Secrets 机制安全挂载到容器中。
-
-### 2. 使用 Docker Compose 一键启动
-
-在项目根目录下执行以下命令：
+在 WSL Ubuntu 中执行：
 
 ```bash
-docker compose up -d
+bash deploy/start-local.sh
+```
+
+脚本会自动生成未纳入 Git 的 `.env.microservices`、JWT Docker Secrets，构建全部微服务 JAR，先启动基础设施服务，发布 Nacos 配置，最后启动网关和业务服务。首次启动还会初始化演示账号：管理员 `admin`、教师 `teacher01`、学生 `20010001` 至 `20010003`；密码均为 `.env.microservices` 中的 `APP_DEFAULT_PASSWORD`。
+
+首次启动需要 Docker Desktop 已开启 **WSL Integration**，且 WSL 中具备 `docker`、`openssl`、`python3` 与 `python3-bcrypt`。缺少 BCrypt 模块时执行：
+
+```bash
+sudo apt install python3-bcrypt
+```
+
+### 2. 使用 Docker Compose 手动启动
+
+如需手动控制各阶段，先生成环境配置并构建：
+
+```bash
+bash deploy/prepare-local-deployment.sh
+bash mvnw -B clean package -DskipTests
+docker compose -f compose.yaml --env-file .env.microservices up -d mysql redis rabbitmq minio nacos xxl-job-admin
+bash deploy/publish-nacos.sh
+docker compose -f compose.yaml --env-file .env.microservices up -d --build
 ```
 
 该命令将启动所有基础设施和后端微服务：
-- **MySQL 8.4** (`:13306`)
-- **Redis 7.4** (`:16379`)
-- **RabbitMQ 4.1** (`:15673` 协议, `:15672` 管理后台)
-- **MinIO** (`:19000` API, `:19001` 控制台)
-- **Nacos 3.1.1** (`:8848` 注册与配置中心)
+- **MySQL 8.4** (`:23306`)
+- **Redis 7.4** (`:26379`)
+- **RabbitMQ 4.1** (`:15672` AMQP 协议, `:25672` 管理后台)
+- **MinIO** (`:29000` API, `:29001` 控制台)
+- **Nacos 3.1.1** (`:18081` 控制台，`:18848` 注册与配置中心)
 - **XXL-Job Admin 3.4.0** (`:18080` 调度中心后台)
 - **微服务及网关** (网关统一监听 `:16730` 端口)
 
 > [!IMPORTANT]
-> MySQL 容器启动时会自动执行 `deploy/mysql/init` 目录下的 SQL 脚本，自动创建微服务所需的各个数据库（`exam_iam`, `exam_academic`, `exam_content`, `exam_management`, `exam_runtime`, `exam_grading`, `exam_reporting`, `nacos_config`, `xxl_job`）并初始化 Nacos 配置数据。
+> MySQL 容器启动时会自动执行 `deploy/mysql/init` 目录下的 SQL 脚本，自动创建微服务所需的各个数据库（`exam_iam`, `exam_academic`, `exam_content`, `exam_management`, `exam_runtime`, `exam_grading`, `exam_reporting`, `nacos_config`, `xxl_job`）。Nacos 业务配置由 `deploy/publish-nacos.sh` 发布。
+> 微服务栈使用独立的 Docker 数据卷和本机端口，因此可与旧单体项目的 `13306`、`16379`、`19000` 端口并存。
 
 ### 3. 初始化 Nacos 配置
 
-本地配置需要推送同步到 Nacos 配置中心，在 Windows (PowerShell) 下运行：
+一键脚本已自动完成。仅在更新 `deploy/nacos-config/` 后需手动重新发布：
 
-```powershell
-./deploy/publish-nacos.ps1
+```bash
+bash deploy/publish-nacos.sh
 ```
 
 ### 4. 编译与本地调试（可选）
