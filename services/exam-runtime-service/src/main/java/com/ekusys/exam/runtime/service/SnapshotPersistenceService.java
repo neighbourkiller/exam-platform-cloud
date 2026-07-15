@@ -67,6 +67,23 @@ public class SnapshotPersistenceService {
         return persistDraftInternal(examId, studentId, answers, version);
     }
 
+    @Transactional
+    public long persistDraft(Long examId, Long studentId, List<AnswerPayload> answers,
+                             long version, LocalDateTime receivedAt) {
+        long storedVersion = persistDraftInternal(examId, studentId, answers, version);
+        if (storedVersion >= version && receivedAt != null) {
+            jdbc.update(
+                """
+                    update exam_session
+                       set last_snapshot_time=greatest(coalesce(last_snapshot_time,?),?),update_time=?
+                     where exam_id=? and student_id=? and status='ANSWERING'
+                    """,
+                receivedAt, receivedAt, receivedAt, examId, studentId
+            );
+        }
+        return storedVersion;
+    }
+
     public int touchActiveSession(Long sessionId, LocalDateTime receivedAt) {
         return jdbc.update(
             """

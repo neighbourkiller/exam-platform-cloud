@@ -48,34 +48,38 @@ class ExamRuntimeServiceSubmissionTest {
         request.setClientTimestamp(100L);
         request.setSnapshotVersion(100L);
         ExamClientLeaseView lease = ExamClientLeaseView.builder()
-            .leaseToken("rotated-lease")
+            .leaseToken("stable-lease")
             .heartbeatIntervalSeconds(30)
             .leaseTimeoutSeconds(90)
             .build();
         SnapshotAckView saved = SnapshotAckView.builder().snapshotVersion(100L).build();
         when(fixture.leaseService.renew(
-            SESSION_ID, request.getClientId(), request.getLeaseToken(), fixture.now
-        )).thenReturn(lease);
+            eq(EXAM_ID), eq(USER_ID), eq(request.getClientId()), eq(request.getLeaseToken()),
+            any(LocalDateTime.class), eq(true)
+        )).thenReturn(new ExamClientLeaseContext(
+            SESSION_ID, LocalDateTime.of(2026, 7, 12, 10, 5), fixture.now, lease
+        ));
         when(fixture.snapshotService.save(
-            EXAM_ID, USER_ID, SESSION_ID,
-            LocalDateTime.of(2026, 7, 12, 10, 5), fixture.now, request
+            eq(EXAM_ID), eq(USER_ID), eq(SESSION_ID),
+            eq(LocalDateTime.of(2026, 7, 12, 10, 5)), any(LocalDateTime.class), eq(request)
         )).thenReturn(saved);
 
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::getCurrentUserId).thenReturn(USER_ID);
             SnapshotAckView result = fixture.service.snapshot(EXAM_ID, request);
 
-            assertThat(result.getLeaseToken()).isEqualTo("rotated-lease");
+            assertThat(result.getLeaseToken()).isEqualTo("stable-lease");
         }
 
         verify(fixture.validator).validateAnswers(request.getAnswers());
-        verify(fixture.validator).validateSnapshotVersion(request, fixture.now);
+        verify(fixture.validator).validateSnapshotVersion(eq(request), any(LocalDateTime.class));
         verify(fixture.leaseService).renew(
-            SESSION_ID, request.getClientId(), request.getLeaseToken(), fixture.now
+            eq(EXAM_ID), eq(USER_ID), eq(request.getClientId()), eq(request.getLeaseToken()),
+            any(LocalDateTime.class), eq(true)
         );
         verify(fixture.snapshotService).save(
-            EXAM_ID, USER_ID, SESSION_ID,
-            LocalDateTime.of(2026, 7, 12, 10, 5), fixture.now, request
+            eq(EXAM_ID), eq(USER_ID), eq(SESSION_ID),
+            eq(LocalDateTime.of(2026, 7, 12, 10, 5)), any(LocalDateTime.class), eq(request)
         );
     }
 
@@ -88,7 +92,7 @@ class ExamRuntimeServiceSubmissionTest {
         request.setLeaseToken("lease-1");
         request.setSnapshotVersion(Long.MAX_VALUE);
         doThrow(new BusinessException(ExamAnswerInputValidator.INVALID_VERSION_CODE, "future"))
-            .when(fixture.validator).validateSnapshotVersion(request, fixture.now);
+            .when(fixture.validator).validateSnapshotVersion(eq(request), any(LocalDateTime.class));
 
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::getCurrentUserId).thenReturn(USER_ID);
@@ -119,6 +123,7 @@ class ExamRuntimeServiceSubmissionTest {
         );
         verify(fixture.outbox).submissionAccepted(SUBMISSION_ID);
         verify(fixture.snapshotService).clearAfterCommit(EXAM_ID, USER_ID);
+        verify(fixture.leaseService).clearAfterCommit(EXAM_ID, USER_ID, request.getLeaseToken());
     }
 
     @Test

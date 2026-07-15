@@ -44,12 +44,12 @@ class SnapshotFlushCoordinatorTest {
     @Test
     void persistsClaimedSnapshotAndAcknowledgesMatchingVersion() throws Exception {
         when(queue.read(claim)).thenReturn(new SnapshotFlushRead(true, payload(100L), 100L));
-        when(persistence.persistDraft(eq(1L), eq(2L), any(), eq(100L))).thenReturn(100L);
+        when(persistence.persistDraft(eq(1L), eq(2L), any(), eq(100L), any())).thenReturn(100L);
         when(queue.acknowledge(claim, 100L)).thenReturn(1L);
 
         coordinator.flushDue();
 
-        verify(persistence).persistDraft(eq(1L), eq(2L), any(), eq(100L));
+        verify(persistence).persistDraft(eq(1L), eq(2L), any(), eq(100L), any());
         verify(queue).acknowledge(claim, 100L);
         verify(queue, never()).markFailure(any(), eq(100L), any(), any(), anyLong());
     }
@@ -66,13 +66,13 @@ class SnapshotFlushCoordinatorTest {
         verify(queue).markFailure(
             eq(claim), eq(100L), any(), eq(SnapshotFailureMode.POISON), anyLong()
         );
-        verify(persistence, never()).persistDraft(any(), any(), any(), anyLong());
+        verify(persistence, never()).persistDraft(any(), any(), any(), anyLong(), any());
     }
 
     @Test
     void retriesDatabaseFailureWithoutQuarantining() throws Exception {
         when(queue.read(claim)).thenReturn(new SnapshotFlushRead(true, payload(100L), 100L));
-        when(persistence.persistDraft(eq(1L), eq(2L), any(), eq(100L)))
+        when(persistence.persistDraft(eq(1L), eq(2L), any(), eq(100L), any()))
             .thenThrow(new DataRetrievalFailureException("mysql offline"));
         when(queue.nextAttempt(claim.member())).thenReturn(2);
         when(queue.markFailure(eq(claim), eq(100L), any(), eq(SnapshotFailureMode.TRANSIENT), anyLong()))
@@ -94,7 +94,7 @@ class SnapshotFlushCoordinatorTest {
         coordinator.flushDue();
 
         verify(queue).acknowledgeMissing(claim);
-        verify(persistence, never()).persistDraft(any(), any(), any(), anyLong());
+        verify(persistence, never()).persistDraft(any(), any(), any(), anyLong(), any());
     }
 
     private String payload(long version) throws Exception {

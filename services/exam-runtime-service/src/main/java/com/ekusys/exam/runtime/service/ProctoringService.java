@@ -36,11 +36,14 @@ public class ProctoringService {
     private final JdbcTemplate jdbc;
     private final ManagementRuntimeClient management;
     private final IamRuntimeClient iam;
+    private final ExamClientLeaseService clientLeaseService;
 
-    public ProctoringService(JdbcTemplate jdbc, ManagementRuntimeClient management, IamRuntimeClient iam) {
+    public ProctoringService(JdbcTemplate jdbc, ManagementRuntimeClient management, IamRuntimeClient iam,
+                             ExamClientLeaseService clientLeaseService) {
         this.jdbc = jdbc;
         this.management = management;
         this.iam = iam;
+        this.clientLeaseService = clientLeaseService;
     }
 
     public ProctoringOverviewView overview(Long examId) {
@@ -120,14 +123,16 @@ public class ProctoringService {
             "select status,last_snapshot_time from exam_session where exam_id=? and student_id=? order by update_time desc,id desc limit 1",
             (rs, rowNum) -> new SessionSummary(rs.getString("status"), rs.getObject("last_snapshot_time", LocalDateTime.class)),
             examId, studentId).stream().findFirst().orElse(new SessionSummary(null, null));
+        LocalDateTime liveSnapshotTime = clientLeaseService.lastSnapshot(examId, studentId);
+        LocalDateTime lastSnapshotTime = latest(session.lastSnapshotTime(), liveSnapshotTime);
         int riskScore = Math.min(100, event.eventCount() * 10 + (event.offscreenMs() >= 30000 ? 20 : 0));
         String riskLevel = riskScore >= 60 ? "HIGH" : riskScore >= 20 ? "MEDIUM" : "LOW";
         boolean answering = "ANSWERING".equals(session.status());
-        boolean snapshotAlert = answering && (session.lastSnapshotTime() == null
-            || session.lastSnapshotTime().isBefore(LocalDateTime.now().minusSeconds(30)));
+        boolean snapshotAlert = answering && (lastSnapshotTime == null
+            || lastSnapshotTime.isBefore(LocalDateTime.now().minusSeconds(30)));
         String name = user == null ? "学生" + studentId : firstNonBlank(user.realName(), user.username(), "学生" + studentId);
         return new ProctoringStudentView(studentId, name, user == null ? null : user.username(), List.of(),
-            riskScore, riskLevel, event.eventCount(), event.latestType(), event.lastTime(), session.lastSnapshotTime(),
+            riskScore, riskLevel, event.eventCount(), event.latestType(), event.lastTime(), lastSnapshotTime,
             answering, snapshotAlert, event.offscreenMs(), event.offscreenMs() >= 30000, disposition(examId, studentId));
     }
 
@@ -137,6 +142,12 @@ public class ProctoringService {
             (rs, rowNum) -> new ProctoringDispositionView(rs.getString("status"), rs.getString("remark"),
                 nullableLong(rs, "handled_by"), null, rs.getObject("handled_at", LocalDateTime.class)),
             examId, studentId).stream().findFirst().orElse(new ProctoringDispositionView("PENDING_REVIEW", null, null, null, null));
+    }
+
+    private LocalDateTime latest(LocalDateTime left, LocalDateTime right) {
+        if (left == null) return right;
+        if (right == null) return left;
+        return left.isAfter(right) ? left : right;
     }
 
     private List<ProctoringRecentEventView> recentEvents(Long examId, Map<Long, UserSummary> users) {

@@ -252,7 +252,7 @@ const leaseState = reactive({
   clientId: '',
   leaseToken: null,
   leaseExpiresAt: null,
-  heartbeatIntervalSeconds: 15,
+  heartbeatIntervalSeconds: 30,
   leaseTimeoutSeconds: 90,
   conflict: false
 })
@@ -305,6 +305,8 @@ let pendingDraftAnswerTimestampUpdate = false
 let navigationLeaveReporting = false
 let lastNavigationLeaveAttemptAt = 0
 let inactivityEventOpen = false
+let leaseRequestTail = Promise.resolve()
+let lastLeaseRenewedAt = 0
 const recentEventTimes = new Map()
 const cameraProctoring = useCameraProctoring({
   reportEvent: (eventType, durationMs, payload, evidence = []) =>
@@ -1009,7 +1011,7 @@ const syncLeaseState = (record) => {
   leaseState.clientId = record?.clientId || ''
   leaseState.leaseToken = record?.leaseToken || null
   leaseState.leaseExpiresAt = record?.leaseExpiresAt || null
-  leaseState.heartbeatIntervalSeconds = Number(record?.heartbeatIntervalSeconds || 15)
+  leaseState.heartbeatIntervalSeconds = Number(record?.heartbeatIntervalSeconds || 30)
   leaseState.leaseTimeoutSeconds = Number(record?.leaseTimeoutSeconds || 90)
 }
 
@@ -1028,6 +1030,13 @@ const applyLeaseResponse = (payload = {}) => {
   }
   const record = updateExamClientLease(syncState.userId, examId, payload)
   syncLeaseState(record)
+  lastLeaseRenewedAt = Date.now()
+}
+
+const runLeaseRequest = (request) => {
+  const current = leaseRequestTail.catch(() => {}).then(request)
+  leaseRequestTail = current.catch(() => {})
+  return current
 }
 
 const buildClientLeasePayload = () => {
@@ -1080,7 +1089,7 @@ const stopExamRuntimeTimers = () => {
     snapshotTimer = null
   }
   if (heartbeatTimer) {
-    clearInterval(heartbeatTimer)
+    clearTimeout(heartbeatTimer)
     heartbeatTimer = null
   }
   if (healthCheckTimer) {
@@ -1148,9 +1157,21 @@ const runClientHeartbeat = async () => {
   if (!syncState.initialized || leaseState.conflict || !navigator.onLine) {
     return false
   }
+  const heartbeatIntervalMs = Math.max(5, Number(leaseState.heartbeatIntervalSeconds || 30)) * 1000
+  if (Date.now() - lastLeaseRenewedAt < heartbeatIntervalMs) {
+    return true
+  }
   try {
     const startedAt = Date.now()
-    const lease = await clientHeartbeatApi(examId, buildClientLeasePayload(), { silent: true, timeout: 10000 })
+    const lease = await runLeaseRequest(() => {
+      if (Date.now() - lastLeaseRenewedAt < heartbeatIntervalMs) {
+        return null
+      }
+      return clientHeartbeatApi(examId, buildClientLeasePayload(), { silent: true, timeout: 10000 })
+    })
+    if (!lease) {
+      return true
+    }
     applyLeaseResponse(lease)
     const latency = Date.now() - startedAt
     updateNetworkStatus(latency > 2500 ? 'DEGRADED' : 'ONLINE', latency)
@@ -1167,6 +1188,26 @@ const runClientHeartbeat = async () => {
     syncState.lastSyncErrorMessage = error?.message || '考试窗口心跳失败'
     return false
   }
+}
+
+const scheduleNextHeartbeat = ({ initial = false } = {}) => {
+  if (endingExam.value || leaseState.conflict || !syncState.initialized) {
+    return
+  }
+  if (heartbeatTimer) {
+    clearTimeout(heartbeatTimer)
+  }
+  const baseMs = Math.max(5, Number(leaseState.heartbeatIntervalSeconds || 30)) * 1000
+  const delayMs = initial
+    ? Math.floor(Math.random() * 10000)
+    : Math.round(baseMs * (0.8 + Math.random() * 0.4))
+  heartbeatTimer = setTimeout(async () => {
+    heartbeatTimer = null
+    await runClientHeartbeat()
+    if (!endingExam.value && !leaseState.conflict && syncState.initialized) {
+      scheduleNextHeartbeat()
+    }
+  }, delayMs)
 }
 
 const refreshQueueSize = async () => {
@@ -1424,7 +1465,11 @@ const flushSyncQueue = async ({ force = false } = {}) => {
             error.isBusinessError = true
             throw error
           }
-          const ack = await snapshotApi(examId, withClientLeasePayload(item.payload), { silent: true, timeout: 10000 })
+          const ack = await runLeaseRequest(() => snapshotApi(
+            examId,
+            withClientLeasePayload(item.payload),
+            { silent: true, timeout: 10000 }
+          ))
           applyLeaseResponse(ack)
           syncState.lastSyncedAt = Math.max(Number(syncState.lastSyncedAt || 0), Number(item.payload?.snapshotVersion || item.occurredAt || 0))
           syncState.lastServerAckAt = ack?.serverReceivedAt || syncState.lastServerAckAt
@@ -1506,7 +1551,7 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
   syncState.syncErrorAt = null
   syncState.lastSyncErrorMessage = ''
   const syncVersion = Math.max(syncState.updatedAt || 0, (syncState.snapshotVersion || 0) + 1, Date.now())
-  const payload = buildSnapshotPayload(syncVersion)
+  const payload = withoutClientLeasePayload(buildSnapshotPayload(syncVersion))
   const validationError = answerPayloadValidationError(payload)
   if (validationError) {
     syncState.syncErrorAt = Date.now()
@@ -1519,7 +1564,11 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
   syncState.syncing = true
   try {
     const startedAt = Date.now()
-    const ack = await snapshotApi(examId, payload, { silent: true, timeout: 10000 })
+    const ack = await runLeaseRequest(() => snapshotApi(
+      examId,
+      withClientLeasePayload(payload),
+      { silent: true, timeout: 10000 }
+    ))
     applyLeaseResponse(ack)
     const latency = Date.now() - startedAt
     updateNetworkStatus(latency > 2500 ? 'DEGRADED' : 'ONLINE', latency)
@@ -1597,7 +1646,7 @@ const submit = async (needConfirm = true) => {
     return
   }
   try {
-    await submitExamApi(examId, withClientLeasePayload(buildSubmitPayload()))
+    await runLeaseRequest(() => submitExamApi(examId, withClientLeasePayload(buildSubmitPayload())))
   } catch (error) {
     if (await handleExamClientLeaseError(error)) {
       return
@@ -1922,9 +1971,7 @@ const bootstrapExam = async () => {
     void syncDirtyDraft()
     void flushSyncQueue()
   }, 15000)
-  heartbeatTimer = setInterval(() => {
-    void runClientHeartbeat()
-  }, Math.max(5, Number(leaseState.heartbeatIntervalSeconds || 15)) * 1000)
+  scheduleNextHeartbeat({ initial: true })
   healthCheckTimer = setInterval(() => {
     void runHealthCheck()
   }, 30000)
@@ -2011,7 +2058,7 @@ onBeforeUnmount(() => {
   void exitFullscreenForExamEnd()
   if (timer) clearInterval(timer)
   if (snapshotTimer) clearInterval(snapshotTimer)
-  if (heartbeatTimer) clearInterval(heartbeatTimer)
+  if (heartbeatTimer) clearTimeout(heartbeatTimer)
   if (inactivityTimer) clearInterval(inactivityTimer)
   if (healthCheckTimer) clearInterval(healthCheckTimer)
   if (queueFlushTimer) clearTimeout(queueFlushTimer)

@@ -111,7 +111,8 @@ public class SnapshotFlushCoordinator {
             SnapshotPayload payload = objectMapper.readValue(read.payload(), SnapshotPayload.class);
             validatePayload(identity, payload, read.version());
             long persistedVersion = persistence.persistDraft(
-                identity.examId(), identity.studentId(), payload.answers(), payload.snapshotVersion()
+                identity.examId(), identity.studentId(), payload.answers(), payload.snapshotVersion(),
+                parseReceivedAt(payload.serverReceivedAt())
             );
             if (persistedVersion >= 0 && persistedVersion < payload.snapshotVersion()) {
                 throw new IllegalStateException("MySQL draft version did not cover snapshot");
@@ -143,6 +144,14 @@ public class SnapshotFlushCoordinator {
             throw new SnapshotPayloadException("快照身份或版本不匹配");
         }
         validator.validateAnswers(payload.answers());
+    }
+
+    private java.time.LocalDateTime parseReceivedAt(String value) {
+        try {
+            return value == null ? null : java.time.LocalDateTime.parse(value);
+        } catch (java.time.format.DateTimeParseException exception) {
+            throw new SnapshotPayloadException("非法快照接收时间");
+        }
     }
 
     private void handleFailure(SnapshotFlushClaim claim, long version,

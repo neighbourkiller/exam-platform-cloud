@@ -73,10 +73,6 @@ public class ExamSnapshotService {
             return ack(request, receivedAt, storedVersion);
         }
         long storedVersion = Math.abs(result);
-        if (result > 0 && persistence.touchActiveSession(sessionId, receivedAt) != 1) {
-            deletePayloadIfVersion(examId, studentId, version);
-            throw new BusinessException("考试会话已结束");
-        }
         return ack(request, receivedAt, storedVersion);
     }
 
@@ -127,15 +123,6 @@ public class ExamSnapshotService {
             queue.clear(examId, studentId);
         } catch (DataAccessException exception) {
             log.warn("Redis snapshot cleanup failed: examId={}, studentId={}", examId, studentId, exception);
-        }
-    }
-
-    private void deletePayloadIfVersion(Long examId, Long studentId, long version) {
-        try {
-            queue.discardPayloadIfVersion(examId, studentId, version);
-        } catch (DataAccessException exception) {
-            log.warn("Redis snapshot conditional cleanup failed: examId={}, studentId={}, version={}",
-                examId, studentId, version, exception);
         }
     }
 

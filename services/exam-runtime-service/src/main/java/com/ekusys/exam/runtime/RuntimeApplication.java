@@ -1,5 +1,6 @@
 package com.ekusys.exam.runtime;
 
+import com.ekusys.exam.runtime.config.ClientLeaseProperties;
 import com.ekusys.exam.runtime.config.SnapshotProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.SpringApplication;
@@ -10,7 +11,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @EnableFeignClients
 @EnableScheduling
-@EnableConfigurationProperties(SnapshotProperties.class)
+@EnableConfigurationProperties({SnapshotProperties.class, ClientLeaseProperties.class})
 @MapperScan("com.ekusys.exam.runtime.repository")
 @SpringBootApplication(scanBasePackages = "com.ekusys.exam")
 public class RuntimeApplication {

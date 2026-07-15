@@ -3,6 +3,10 @@ spring:
   data: { redis: { host: "${REDIS_HOST:redis}", port: 6379, database: 1 } }
   flyway: { enabled: true, locations: "classpath:db/migration" }
 app:
+  client-lease:
+    heartbeat-interval-seconds: ${APP_CLIENT_LEASE_HEARTBEAT_INTERVAL_SECONDS:30}
+    lease-timeout-seconds: ${APP_CLIENT_LEASE_TIMEOUT_SECONDS:90}
+    persistence-interval-seconds: ${APP_CLIENT_LEASE_PERSISTENCE_INTERVAL_SECONDS:60}
   snapshot:
     flush-interval-ms: ${APP_SNAPSHOT_FLUSH_INTERVAL_MS:30000}
     ttl-hours: ${APP_SNAPSHOT_TTL_HOURS:48}

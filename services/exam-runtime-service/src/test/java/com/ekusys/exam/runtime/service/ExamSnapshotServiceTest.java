@@ -40,11 +40,10 @@ class ExamSnapshotServiceTest {
     }
 
     @Test
-    void savesNewerSnapshotWithVersionAndDeadlineBasedTtl() {
+    void savesNewerSnapshotWithoutSynchronousDatabaseTouch() {
         LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 6, 10, 0);
         SnapshotRequest request = request(100L, "A");
         when(queue.save(eq(1L), eq(2L), eq(100L), anyString(), eq(180_000_000L))).thenReturn(100L);
-        when(persistence.touchActiveSession(9L, receivedAt)).thenReturn(1);
 
         SnapshotAckView ack = service.save(
             1L, 2L, 9L, receivedAt.plusHours(2), receivedAt, request
@@ -52,7 +51,7 @@ class ExamSnapshotServiceTest {
 
         assertEquals(100L, ack.getSnapshotVersion());
         verify(queue).save(eq(1L), eq(2L), eq(100L), anyString(), eq(180_000_000L));
-        verify(persistence).touchActiveSession(9L, receivedAt);
+        verify(persistence, never()).touchActiveSession(any(), any());
     }
 
     @Test

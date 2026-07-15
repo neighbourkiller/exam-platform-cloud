@@ -45,7 +45,7 @@ export const getOrCreateExamClientLease = (userId, examId) => {
     clientId: randomId(),
     leaseToken: null,
     leaseExpiresAt: null,
-    heartbeatIntervalSeconds: 15,
+    heartbeatIntervalSeconds: 30,
     leaseTimeoutSeconds: 90
   })
 }
@@ -56,7 +56,7 @@ export const updateExamClientLease = (userId, examId, lease = {}) => {
     ...current,
     leaseToken: lease.leaseToken || current.leaseToken || null,
     leaseExpiresAt: lease.leaseExpiresAt || current.leaseExpiresAt || null,
-    heartbeatIntervalSeconds: Number(lease.heartbeatIntervalSeconds || current.heartbeatIntervalSeconds || 15),
+    heartbeatIntervalSeconds: Number(lease.heartbeatIntervalSeconds || current.heartbeatIntervalSeconds || 30),
     leaseTimeoutSeconds: Number(lease.leaseTimeoutSeconds || current.leaseTimeoutSeconds || 90)
   }
   return writeRecord(userId, examId, next)

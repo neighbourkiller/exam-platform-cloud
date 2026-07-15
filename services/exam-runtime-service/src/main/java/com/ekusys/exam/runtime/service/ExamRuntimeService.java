@@ -96,7 +96,10 @@ public class ExamRuntimeService {
             if (!"ANSWERING".equals(session.status())) {
                 throw new BusinessException("你已提交过本场考试");
             }
-            lease = clientLeaseService.acquire(session.id(), clientId(request), leaseToken(request), now);
+            lease = clientLeaseService.acquire(
+                examId, userId, session.id(), session.deadline(),
+                clientId(request), leaseToken(request), now
+            );
         } else {
             LocalDateTime durationDeadline = now.plusMinutes(exam.durationMinutes());
             LocalDateTime deadline = durationDeadline.isBefore(exam.endTime()) ? durationDeadline : exam.endTime();
@@ -124,6 +127,9 @@ public class ExamRuntimeService {
                 );
                 outbox.sessionStarted(examId, userId);
                 session = new SessionRow(sessionId, now, deadline, "ANSWERING");
+                clientLeaseService.activateAfterCommit(
+                    examId, userId, sessionId, deadline, clientId(request), lease, now
+                );
             } catch (DuplicateKeyException exception) {
                 rows = findSessions(examId, userId);
                 if (rows.isEmpty()) {
@@ -134,7 +140,10 @@ public class ExamRuntimeService {
                 if (!"ANSWERING".equals(session.status())) {
                     throw new BusinessException("你已提交过本场考试");
                 }
-                lease = clientLeaseService.acquire(session.id(), clientId(request), leaseToken(request), now);
+                lease = clientLeaseService.acquire(
+                    examId, userId, session.id(), session.deadline(),
+                    clientId(request), leaseToken(request), now
+                );
             }
         }
 
@@ -162,26 +171,23 @@ public class ExamRuntimeService {
 
     public ExamClientLeaseView heartbeat(Long examId, ExamClientLeaseRequest request) {
         Long userId = requireUser();
-        SessionRow session = active(examId, userId);
-        LocalDateTime now = dbNow();
-        if (!now.isBefore(session.deadline())) {
-            throw new BusinessException("考试作答时间已结束");
-        }
-        return clientLeaseService.renew(session.id(), clientId(request), leaseToken(request), now);
+        LocalDateTime now = LocalDateTime.now();
+        return clientLeaseService.renew(
+            examId, userId, clientId(request), leaseToken(request), now, false
+        ).lease();
     }
 
     public SnapshotAckView snapshot(Long examId, SnapshotRequest request) {
         Long userId = requireUser();
-        SessionRow session = active(examId, userId);
-        LocalDateTime now = dbNow();
-        if (!now.isBefore(session.deadline())) {
-            throw new BusinessException("考试作答时间已结束");
-        }
+        LocalDateTime now = LocalDateTime.now();
         answerInputValidator.validateAnswers(request.getAnswers());
         answerInputValidator.validateSnapshotVersion(request, now);
-        ExamClientLeaseView lease = clientLeaseService.renew(session.id(), request.getClientId(), request.getLeaseToken(), now);
+        ExamClientLeaseContext leaseContext = clientLeaseService.renew(
+            examId, userId, request.getClientId(), request.getLeaseToken(), now, true
+        );
+        ExamClientLeaseView lease = leaseContext.lease();
         SnapshotAckView ack = snapshotService.save(
-            examId, userId, session.id(), session.deadline(), now, request
+            examId, userId, leaseContext.sessionId(), leaseContext.deadline(), now, request
         );
         ack.setLeaseToken(lease.getLeaseToken());
         ack.setLeaseExpiresAt(lease.getLeaseExpiresAt());
@@ -227,6 +233,7 @@ public class ExamRuntimeService {
         );
         outbox.submissionAccepted(submissionId);
         snapshotService.clearAfterCommit(examId, userId);
+        clientLeaseService.clearAfterCommit(examId, userId, request.getLeaseToken());
         return SubmitResultView.builder().submissionId(submissionId).status("PROCESSING").build();
     }
 
