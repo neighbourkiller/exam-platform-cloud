@@ -110,7 +110,7 @@ const statusText = (status) => {
 }
 
 .environment-check-panel :deep(.el-progress-bar__outer) {
-  background-color: var(--student-soft, #eee8df);
+  background-color: var(--student-soft, #f7ecdf);
 }
 
 .check-list {
@@ -119,26 +119,48 @@ const statusText = (status) => {
 }
 
 .check-item {
+  position: relative;
+  overflow: hidden;
   padding: 16px 18px;
-  border: 1px solid var(--student-line, #e7dfd3);
-  border-radius: 14px;
-  background: #fffdfa;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  border: 1px solid var(--student-line, #eadfce);
+  border-radius: 12px;
+  background: var(--student-panel-strong, #fffefa);
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.check-item::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: #b9aa9c;
 }
 
 .check-item--passed {
-  border-color: #c9dfc9;
-  background: #f5faf3;
+  border-color: #c7dcc5;
+  background: #f2f8f0;
+}
+
+.check-item--passed::before {
+  background: var(--student-success, #4f7a5a);
 }
 
 .check-item--warning {
-  border-color: #e8c9a5;
-  background: #fff8ef;
+  border-color: #ead39f;
+  background: #fff8e8;
+}
+
+.check-item--warning::before {
+  background: var(--student-warning, #c98a32);
 }
 
 .check-item--failed {
-  border-color: #ecc0b6;
-  background: #fff5f2;
+  border-color: #e7c4bd;
+  background: #fdf2ef;
+}
+
+.check-item--failed::before {
+  background: var(--student-danger, #b75a4e);
 }
 
 .check-item__head {

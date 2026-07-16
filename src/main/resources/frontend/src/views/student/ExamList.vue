@@ -1,7 +1,17 @@
 <template>
   <div class="student-exams-page">
     <section class="student-hero">
-      <h1><span class="hero-burst" aria-hidden="true"></span><span>{{ greetingText }}，{{ auth.username || 'student' }}</span></h1>
+      <div class="student-hero__copy">
+        <p class="student-hero__eyebrow">学生考试中心</p>
+        <h1>{{ greetingText }}，{{ auth.username || 'student' }}</h1>
+        <p class="student-hero__description">从这里查看考试安排、完成考前检测，并在开考前从容进入答题。</p>
+      </div>
+
+      <div class="student-hero__date" aria-label="当前日期">
+        <span>今日</span>
+        <strong>{{ calendarLabel }}</strong>
+        <small>请提前完成环境检测</small>
+      </div>
 
       <div class="exam-command-panel">
         <el-input
@@ -25,6 +35,21 @@
           <span>{{ item.label }}</span>
         </button>
       </div>
+    </section>
+
+    <section class="exam-overview" aria-label="考试概况">
+      <article
+        v-for="metric in examMetrics"
+        :key="metric.key"
+        :class="['overview-card', `overview-card--${metric.tone}`]"
+      >
+        <span class="overview-card__icon" aria-hidden="true"><el-icon><component :is="metric.icon" /></el-icon></span>
+        <span class="overview-card__copy">
+          <span>{{ metric.label }}</span>
+          <strong>{{ metric.value }}</strong>
+          <small>{{ metric.description }}</small>
+        </span>
+      </article>
     </section>
 
     <section class="exam-panel">
@@ -108,7 +133,7 @@
 import { computed, ref, onMounted, markRaw } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Menu, VideoPlay, Timer, CircleCheck, DocumentDelete } from '@element-plus/icons-vue'
+import { Calendar, Menu, VideoPlay, Timer, CircleCheck, DocumentDelete } from '@element-plus/icons-vue'
 import { studentExamsApi } from '../../api'
 import { formatDateTime, parseDateTime } from '../../utils/datetime'
 import PreExamCheckDialog from './PreExamCheckDialog.vue'
@@ -130,6 +155,11 @@ const filters = [
   { key: 'finished', label: '已结束', icon: markRaw(CircleCheck) },
   { key: 'unsubmitted', label: '未提交', icon: markRaw(DocumentDelete) }
 ]
+const metricIcons = {
+  available: markRaw(Calendar),
+  ongoing: markRaw(Timer),
+  completed: markRaw(CircleCheck)
+}
 const greetingText = computed(() => {
   const hour = new Date().getHours()
   if (hour < 6) return '夜深了'
@@ -137,6 +167,37 @@ const greetingText = computed(() => {
   if (hour < 18) return '下午好'
   return '晚上好'
 })
+const calendarLabel = computed(() => new Intl.DateTimeFormat('zh-CN', {
+  month: 'long',
+  day: 'numeric',
+  weekday: 'long'
+}).format(new Date()))
+const examMetrics = computed(() => [
+  {
+    key: 'available',
+    label: '待参加',
+    value: exams.value.filter(canEnter).length,
+    description: '可进入考试',
+    tone: 'accent',
+    icon: metricIcons.available
+  },
+  {
+    key: 'ongoing',
+    label: '进行中',
+    value: exams.value.filter((exam) => exam.status === 'ONGOING').length,
+    description: '请及时完成作答',
+    tone: 'warning',
+    icon: metricIcons.ongoing
+  },
+  {
+    key: 'completed',
+    label: '已完成',
+    value: exams.value.filter((exam) => exam.submitted || exam.status === 'FINISHED').length,
+    description: '可前往查看结果',
+    tone: 'success',
+    icon: metricIcons.completed
+  }
+])
 
 const load = async () => {
   loading.value = true
@@ -546,10 +607,253 @@ onMounted(load)
   color: var(--text-muted);
 }
 
+/* 暖色考试中心：以信息层级而非大面积留白承载首页重点。 */
+.student-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 18px 32px;
+  padding: 8px 0 0;
+  text-align: left;
+}
+
+.student-hero__eyebrow {
+  margin: 0 0 8px;
+  color: var(--student-accent);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.student-hero h1 {
+  display: block;
+  color: var(--student-text);
+  font-family: 'Noto Serif SC', 'Songti SC', Georgia, serif;
+  font-size: clamp(30px, 3vw, 42px);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.student-hero__description {
+  max-width: 620px;
+  margin: 12px 0 0;
+  color: var(--student-muted);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.student-hero__date {
+  min-width: 208px;
+  display: grid;
+  gap: 4px;
+  padding: 14px 18px;
+  border: 1px solid #ecd9c8;
+  border-radius: 14px;
+  background: #fff5ea;
+  color: var(--student-text);
+}
+
+.student-hero__date span,
+.student-hero__date small {
+  color: var(--student-muted);
+  font-size: 12px;
+}
+
+.student-hero__date strong {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.exam-command-panel {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 14px;
+  border: 1px solid var(--student-line);
+  border-radius: 14px;
+  background: var(--student-panel-strong);
+  box-shadow: 0 8px 22px rgba(83, 57, 40, 0.05);
+}
+
+.exam-command-panel:focus-within {
+  box-shadow: 0 0 0 3px rgba(201, 106, 61, 0.16), 0 8px 22px rgba(83, 57, 40, 0.06);
+}
+
+.exam-filters {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  margin-top: -6px;
+}
+
+.filter-pill {
+  min-height: 40px;
+  border-radius: 10px;
+  background: var(--student-panel-strong);
+}
+
+.filter-pill:hover,
+.filter-pill.is-active {
+  color: var(--student-accent-dark);
+  background: #fff0e4;
+  border-color: #eac7b4;
+}
+
+.exam-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.overview-card {
+  min-height: 112px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--student-line);
+  border-radius: 16px;
+  background: var(--student-panel-strong);
+  box-shadow: 0 8px 20px rgba(83, 57, 40, 0.04);
+}
+
+.overview-card__icon {
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  font-size: 23px;
+}
+
+.overview-card__copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.overview-card__copy > span,
+.overview-card__copy small {
+  color: var(--student-muted);
+  font-size: 13px;
+}
+
+.overview-card__copy strong {
+  color: var(--student-text);
+  font-size: 30px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+}
+
+.overview-card--accent .overview-card__icon {
+  color: var(--student-accent);
+  background: #fbe8dd;
+}
+
+.overview-card--warning .overview-card__icon {
+  color: var(--student-warning);
+  background: #fff4dc;
+}
+
+.overview-card--success .overview-card__icon {
+  color: var(--student-success);
+  background: #edf5eb;
+}
+
+.exam-panel {
+  padding: 26px 28px 24px;
+  border: 1px solid var(--student-line);
+  background: var(--student-panel-strong);
+  box-shadow: var(--shadow-soft);
+}
+
+.refresh-action {
+  min-height: 40px;
+  border-color: #e3cab9;
+  background: #fff9f3;
+  color: var(--student-accent-dark);
+}
+
+.refresh-action:hover {
+  background: #fff0e4;
+  border-color: #dba98e;
+}
+
+.student-table {
+  --el-table-header-bg-color: #fbf1e7;
+  --el-table-row-hover-bg-color: #fff6ee;
+  --el-table-border-color: var(--student-line);
+  --el-table-tr-bg-color: var(--student-panel-strong);
+}
+
+.student-table :deep(.el-table tr),
+.student-table :deep(.el-table td.el-table__cell),
+.student-table :deep(.el-table__empty-block),
+.student-table :deep(.el-table__empty-text) {
+  background-color: var(--student-panel-strong) !important;
+  border-bottom-color: var(--student-line);
+}
+
+.student-table :deep(.el-table tr:hover > td.el-table__cell) {
+  background-color: #fff6ee !important;
+}
+
+.status-chip.is-live,
+.submit-chip.is-submitted {
+  border-color: #c8ddc7;
+  background: #eff7ed;
+  color: var(--student-success);
+}
+
+.status-chip.is-ready {
+  border-color: #ead39f;
+  background: #fff6e1;
+  color: #90641d;
+}
+
+.status-chip.is-ended-danger {
+  border-color: #edc7c0;
+  background: #fdf1ee;
+  color: var(--student-danger);
+}
+
+.enter-action {
+  min-height: 34px;
+  border-color: #e1c7b5;
+  color: var(--student-accent-dark);
+}
+
+.enter-action:hover:not(:disabled) {
+  border-color: var(--student-accent);
+  background: var(--student-accent);
+  color: #fffefa;
+}
+
+.filter-pill:focus-visible,
+.refresh-action:focus-visible,
+.enter-action:focus-visible {
+  outline: 3px solid rgba(201, 106, 61, 0.28);
+  outline-offset: 2px;
+}
+
 @media (max-width: 760px) {
+  .student-hero {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .student-hero__date,
+  .exam-command-panel,
+  .exam-filters {
+    grid-column: auto;
+  }
+
   .student-hero h1 {
-    align-items: flex-start;
     font-size: 34px;
+  }
+
+  .exam-overview {
+    grid-template-columns: 1fr;
   }
 
   .exam-panel {

@@ -113,9 +113,9 @@ onBeforeUnmount(() => {
 
 .environment-check-hero,
 .environment-check-content {
-  border: 1px solid var(--student-line, #e7dfd3);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--student-line, #eadfce);
+  border-radius: 16px;
+  background: var(--student-panel-strong, #fffefa);
   box-shadow: var(--shadow-soft);
 }
 
@@ -124,12 +124,12 @@ onBeforeUnmount(() => {
   align-items: flex-end;
   justify-content: space-between;
   gap: 24px;
-  padding: 34px 36px;
+  padding: 30px 32px;
 }
 
 .environment-check-hero__eyebrow {
   margin: 0 0 8px;
-  color: var(--student-accent, #d97757);
+  color: var(--student-accent, #c96a3d);
   font-size: 13px;
   font-weight: 700;
 }
@@ -137,9 +137,9 @@ onBeforeUnmount(() => {
 .environment-check-hero h1 {
   margin: 0;
   color: var(--text-main);
-  font-family: Georgia, 'Times New Roman', 'Songti SC', serif;
-  font-size: clamp(34px, 4vw, 52px);
-  font-weight: 500;
+  font-family: 'Noto Serif SC', 'Songti SC', Georgia, serif;
+  font-size: clamp(30px, 4vw, 42px);
+  font-weight: 650;
   line-height: 1.08;
 }
 
@@ -162,10 +162,18 @@ onBeforeUnmount(() => {
 }
 
 .environment-check-page :deep(.el-button--primary) {
-  --el-button-bg-color: var(--student-accent, #d97757);
-  --el-button-border-color: var(--student-accent, #d97757);
-  --el-button-hover-bg-color: var(--student-accent-dark, #a9472d);
-  --el-button-hover-border-color: var(--student-accent-dark, #a9472d);
+  --el-button-bg-color: var(--student-accent, #c96a3d);
+  --el-button-border-color: var(--student-accent, #c96a3d);
+  --el-button-hover-bg-color: var(--student-accent-dark, #a94f2b);
+  --el-button-hover-border-color: var(--student-accent-dark, #a94f2b);
+  min-height: 44px;
+  padding-inline: 20px;
+  box-shadow: 0 8px 18px rgba(201, 106, 61, 0.18);
+}
+
+.environment-check-page :deep(.el-button--primary:focus-visible) {
+  outline: 3px solid rgba(201, 106, 61, 0.28);
+  outline-offset: 2px;
 }
 
 @media (max-width: 768px) {

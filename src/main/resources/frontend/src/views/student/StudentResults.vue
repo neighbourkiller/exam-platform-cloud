@@ -155,10 +155,10 @@ onMounted(loadResults)
   justify-content: space-between;
   align-items: flex-end;
   gap: 20px;
-  padding: 34px 36px;
-  border: 1px solid var(--student-line, #e7dfd3);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.72);
+  padding: 30px 32px;
+  border: 1px solid var(--student-line, #eadfce);
+  border-radius: 16px;
+  background: var(--student-panel-strong, #fffefa);
   box-shadow: var(--shadow-soft);
 }
 
@@ -170,7 +170,7 @@ onMounted(loadResults)
 
 .hero-content > p:first-child {
   margin: 0;
-  color: var(--student-accent, #d97757);
+  color: var(--student-accent, #c96a3d);
   font-size: 13px;
   font-weight: 700;
 }
@@ -178,9 +178,9 @@ onMounted(loadResults)
 .results-title {
   margin: 0;
   color: var(--text-main);
-  font-family: Georgia, 'Times New Roman', 'Songti SC', serif;
-  font-size: clamp(34px, 4vw, 52px);
-  font-weight: 500;
+  font-family: 'Noto Serif SC', 'Songti SC', Georgia, serif;
+  font-size: clamp(30px, 4vw, 42px);
+  font-weight: 650;
   line-height: 1.08;
 }
 
@@ -191,7 +191,11 @@ onMounted(loadResults)
 }
 
 .refresh-btn {
-  background: #fffdfa;
+  min-height: 40px;
+  padding-inline: 16px;
+  border-color: #e3cab9;
+  background: #fff9f3;
+  color: var(--student-accent-dark);
 }
 
 .metrics-row {
@@ -201,18 +205,23 @@ onMounted(loadResults)
 }
 
 .metric-item {
-  padding: 22px 24px;
-  border: 1px solid var(--student-line, #e7dfd3);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.7);
+  padding: 20px 22px;
+  border: 1px solid var(--student-line, #eadfce);
+  border-top: 3px solid var(--student-accent);
+  border-radius: 14px;
+  background: var(--student-panel-strong, #fffefa);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   animation: fadeUp 0.6s ease-out backwards;
-  box-shadow: 0 10px 26px rgba(54, 43, 33, 0.04);
+  box-shadow: 0 10px 26px rgba(83, 57, 40, 0.05);
 }
+
+.metric-item:nth-child(2) { border-top-color: var(--student-warning); }
+.metric-item:nth-child(3),
+.metric-item:nth-child(4) { border-top-color: var(--student-success); }
 
 .metric-label {
   color: var(--text-muted);
@@ -221,24 +230,24 @@ onMounted(loadResults)
 }
 
 .metric-value {
-  color: var(--text-main);
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 42px;
-  font-weight: 500;
+  color: var(--student-text);
+  font-size: 38px;
+  font-weight: 700;
   line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .text-brand { color: var(--brand); }
-.text-blue { color: #3b82f6; }
-.text-green { color: #10b981; }
-.text-orange { color: #f59e0b; }
-.text-red { color: #ef4444; }
+.text-blue { color: var(--student-accent); }
+.text-green { color: var(--student-success); }
+.text-orange { color: var(--student-warning); }
+.text-red { color: var(--student-danger); }
 
 .table-section {
   padding: 24px;
-  border: 1px solid var(--student-line, #e7dfd3);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--student-line, #eadfce);
+  border-radius: 16px;
+  background: var(--student-panel-strong, #fffefa);
   box-shadow: var(--shadow-soft);
 }
 
@@ -248,28 +257,28 @@ onMounted(loadResults)
   font-size: 13px;
   color: var(--text-muted);
 }
-.divider { color: #cbd5e1; }
+.divider { color: #d9cabb; }
 
 .total-score {
   font-size: 16px;
 }
 
 .pass-text {
-  color: #10b981;
+  color: var(--student-success);
   font-weight: 600;
 }
 .fail-text {
-  color: #ef4444;
+  color: var(--student-danger);
   font-weight: 600;
 }
 .fw-semibold { font-weight: 600; }
 .text-muted { color: var(--text-muted); font-size: 13px; }
 
 .results-table {
-  --el-table-header-bg-color: #f6f1e9;
+  --el-table-header-bg-color: #fbf1e7;
   --el-table-header-text-color: var(--text-main);
-  --el-table-row-hover-bg-color: #faf6ef;
-  --el-table-border-color: var(--student-line, #e7dfd3);
+  --el-table-row-hover-bg-color: #fff6ee;
+  --el-table-border-color: var(--student-line, #eadfce);
   --el-table-text-color: var(--text-main);
   --el-table-tr-bg-color: transparent;
   border-radius: var(--radius-sm);
@@ -288,7 +297,12 @@ onMounted(loadResults)
 .results-table :deep(.el-table tr),
 .results-table :deep(.el-table td.el-table__cell) {
   background-color: transparent !important;
-  border-bottom-color: var(--student-line, #e7dfd3);
+  border-bottom-color: var(--student-line, #eadfce);
+}
+
+.refresh-btn:focus-visible {
+  outline: 3px solid rgba(201, 106, 61, 0.28);
+  outline-offset: 2px;
 }
 
 .results-table :deep(.el-table::before) {

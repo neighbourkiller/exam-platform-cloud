@@ -176,6 +176,42 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.pre-exam-dialog :deep(.el-dialog) {
+  --el-color-primary: #c96a3d;
+  --el-color-primary-light-9: #fdf2ec;
+  --el-color-primary-dark-2: #a94f2b;
+  --el-color-success: #4f7a5a;
+  --el-color-success-light-9: #f2f7f0;
+  --el-color-warning: #c98a32;
+  --el-color-warning-light-9: #fff8e8;
+  --el-color-danger: #b75a4e;
+  --el-color-danger-light-9: #fdf1ef;
+  --el-color-info: #8c7e70;
+  --el-color-info-light-9: #f7f3ef;
+  overflow: hidden;
+  border: 1px solid var(--student-line, #eadfce);
+  border-radius: 18px;
+  background: var(--student-panel-strong, #fffefa);
+  box-shadow: 0 22px 54px rgba(83, 57, 40, 0.2);
+}
+
+.pre-exam-dialog :deep(.el-dialog__header) {
+  margin-right: 0;
+  padding: 24px 28px 18px;
+  border-bottom: 1px solid var(--student-line, #eadfce);
+  background: #fff7ef;
+}
+
+.pre-exam-dialog :deep(.el-dialog__body) {
+  padding: 24px 28px;
+}
+
+.pre-exam-dialog :deep(.el-dialog__footer) {
+  padding: 16px 28px 24px;
+  border-top: 1px solid var(--student-line, #eadfce);
+  background: #fffdfa;
+}
+
 .pre-exam-dialog__header {
   display: flex;
   align-items: flex-start;
@@ -200,6 +236,15 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.pre-exam-dialog__footer :deep(.el-button) {
+  min-height: 42px;
+  padding-inline: 18px;
+}
+
+.pre-exam-dialog__footer :deep(.el-button--primary) {
+  box-shadow: 0 8px 18px rgba(201, 106, 61, 0.18);
 }
 
 @media (max-width: 768px) {

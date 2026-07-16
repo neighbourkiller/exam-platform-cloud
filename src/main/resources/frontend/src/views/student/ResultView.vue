@@ -1,9 +1,9 @@
 <template>
   <div class="result-container">
-    <el-card class="page-card glass-card hover-lift" style="border: none;">
+    <el-card class="result-card">
       <template #header>
         <div class="header">
-          <span class="header-icon">🏁</span>
+          <el-icon class="header-icon" aria-hidden="true"><CircleCheck /></el-icon>
           <span>交卷结果</span>
         </div>
       </template>
@@ -15,7 +15,7 @@
         </div>
       </div>
 
-      <el-descriptions :column="1" border class="result-desc" :label-style="{ background: 'rgba(13, 148, 136, 0.05)', color: 'var(--brand)', fontWeight: '600', width: '120px' }">
+      <el-descriptions :column="1" border class="result-desc" :label-style="{ background: 'rgba(201, 106, 61, 0.08)', color: 'var(--brand)', fontWeight: '600', width: '120px' }">
         <el-descriptions-item label="提交ID">{{ result.submissionId || '--' }}</el-descriptions-item>
         <el-descriptions-item label="客观题得分">{{ result.objectiveScore != null ? result.objectiveScore : '--' }}</el-descriptions-item>
         <el-descriptions-item label="主观题得分">{{ result.subjectiveScore != null ? result.subjectiveScore : '--' }}</el-descriptions-item>
@@ -34,6 +34,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { CircleCheck } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -51,9 +52,27 @@ const goList = () => router.push('/student/exams')
 
 <style scoped>
 .result-container {
-  padding: 20px;
+  padding: 8px 0;
   max-width: 600px;
   margin: 0 auto;
+}
+
+.result-card {
+  border: 1px solid var(--student-line, #eadfce);
+  border-radius: 18px;
+  background: var(--student-panel-strong, #fffefa);
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+
+.result-card :deep(.el-card__header) {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--student-line, #eadfce);
+  background: #fff7ef;
+}
+
+.result-card :deep(.el-card__body) {
+  padding: 28px 24px 24px;
 }
 
 .header {
@@ -62,7 +81,12 @@ const goList = () => router.push('/student/exams')
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--brand);
+  color: var(--student-accent-dark);
+}
+
+.header-icon {
+  color: var(--student-accent);
+  font-size: 22px;
 }
 
 .result-summary {
@@ -80,21 +104,21 @@ const goList = () => router.push('/student/exams')
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: white;
-  border: 6px solid #e2e8f0;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.06);
+  background: #fffaf4;
+  border: 6px solid #eddccc;
+  box-shadow: 0 10px 24px rgba(83, 57, 40, 0.08);
 }
 
 .score-circle.is-passed {
-  border-color: #10b981;
-  color: #10b981;
-  box-shadow: 0 8px 24px rgba(16, 185, 129, 0.15);
+  border-color: var(--student-success, #4f7a5a);
+  color: var(--student-success, #4f7a5a);
+  box-shadow: 0 10px 24px rgba(79, 122, 90, 0.16);
 }
 
 .score-circle.is-failed {
-  border-color: #ef4444;
-  color: #ef4444;
-  box-shadow: 0 8px 24px rgba(239, 68, 68, 0.15);
+  border-color: var(--student-danger, #b75a4e);
+  color: var(--student-danger, #b75a4e);
+  box-shadow: 0 10px 24px rgba(183, 90, 78, 0.15);
 }
 
 .score-label {
@@ -119,6 +143,14 @@ const goList = () => router.push('/student/exams')
   background: transparent !important;
 }
 :deep(.el-descriptions__cell) {
-  background: rgba(255,255,255,0.4) !important;
+  background: #fffefa !important;
+  border-color: var(--student-line, #eadfce) !important;
+}
+
+.result-container :deep(.el-button--primary) {
+  min-height: 44px;
+  padding-inline: 24px;
+  border-radius: 10px;
+  box-shadow: 0 8px 18px rgba(201, 106, 61, 0.18);
 }
 </style>
