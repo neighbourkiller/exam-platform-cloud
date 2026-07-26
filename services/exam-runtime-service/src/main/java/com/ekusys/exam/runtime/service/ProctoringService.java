@@ -13,7 +13,7 @@ import com.ekusys.exam.exam.dto.ProctoringStudentView;
 import com.ekusys.exam.exam.dto.ProctoringTimelineEventView;
 import com.ekusys.exam.iam.api.UserBatchRequest;
 import com.ekusys.exam.iam.api.UserSummary;
-import com.ekusys.exam.management.api.RuntimeExamSnapshot;
+import com.ekusys.exam.management.api.RuntimeExamProctoringContext;
 import com.ekusys.exam.runtime.client.IamRuntimeClient;
 import com.ekusys.exam.runtime.client.ManagementRuntimeClient;
 import java.time.LocalDateTime;
@@ -49,7 +49,8 @@ public class ProctoringService {
     public ProctoringOverviewView overview(Long examId) {
         Context context = context(examId);
         List<ProctoringStudentView> students = context.students();
-        return new ProctoringOverviewView(examId, context.exam().name(), context.exam().status(), students.size(),
+        return new ProctoringOverviewView(
+            examId, context.exam().metadata().name(), context.exam().status(), students.size(),
             count(students, ProctoringStudentView::answering), countRisk(students, "LOW"),
             countRisk(students, "MEDIUM"), countRisk(students, "HIGH"),
             count(students, ProctoringStudentView::snapshotAlert), countDisposition(students, "PENDING_REVIEW"),
@@ -73,7 +74,8 @@ public class ProctoringService {
             (rs, rowNum) -> new ProctoringTimelineEventView(rs.getString("event_type"),
                 rs.getObject("event_time", LocalDateTime.class), nullableLong(rs, "duration_ms"),
                 rs.getString("payload"), rs.getString("evidence_json")), examId, studentId);
-        return new ProctoringStudentTimelineView(examId, context.exam().name(), context.exam().status(), studentId,
+        return new ProctoringStudentTimelineView(
+            examId, context.exam().metadata().name(), context.exam().status(), studentId,
             student.studentName(), student.username(), student.classNames(), student.riskScore(), student.riskLevel(),
             student.eventCount(), student.latestEventType(), student.lastEventTime(), student.lastSnapshotTime(),
             student.answering(), student.snapshotAlert(), student.totalOffscreenDurationMs(), student.longOffscreen(),
@@ -82,7 +84,7 @@ public class ProctoringService {
 
     @Transactional
     public ProctoringDispositionView updateDisposition(Long examId, Long studentId, ProctoringDispositionRequest request) {
-        RuntimeExamSnapshot exam = requireManage(examId);
+        RuntimeExamProctoringContext exam = requireManage(examId);
         if (!exam.candidateIds().contains(studentId)) throw new BusinessException("学生不在该考试监考范围内");
         String status = request.status().trim().toUpperCase(Locale.ROOT);
         if (!DISPOSITIONS.contains(status)) throw new BusinessException("无效的处置状态");
@@ -100,7 +102,7 @@ public class ProctoringService {
     }
 
     private Context context(Long examId) {
-        RuntimeExamSnapshot exam = requireManage(examId);
+        RuntimeExamProctoringContext exam = requireManage(examId);
         List<Long> candidateIds = exam.candidateIds();
         List<UserSummary> userValues = candidateIds.isEmpty() ? List.of() : iam.batch(new UserBatchRequest(candidateIds)).getData();
         Map<Long, UserSummary> users = userValues == null ? Map.of() : userValues.stream()
@@ -173,11 +175,11 @@ public class ProctoringService {
             rs.getInt("cnt"), rs.getLong("duration")), args.toArray());
     }
 
-    private RuntimeExamSnapshot requireManage(Long examId) {
-        RuntimeExamSnapshot exam = management.snapshot(examId).getData();
+    private RuntimeExamProctoringContext requireManage(Long examId) {
+        RuntimeExamProctoringContext exam = management.proctoringContext(examId).getData();
         if (exam == null) throw new BusinessException("考试不存在");
         if (!SecurityUtils.getCurrentRoles().contains("ADMIN")
-            && !java.util.Objects.equals(exam.publisherId(), SecurityUtils.getCurrentUserId())) {
+            && !java.util.Objects.equals(exam.metadata().publisherId(), SecurityUtils.getCurrentUserId())) {
             throw new BusinessException("无权限查看该考试监考信息");
         }
         return exam;
@@ -214,6 +216,7 @@ public class ProctoringService {
     private record SessionSummary(String status, LocalDateTime lastSnapshotTime) {
     }
 
-    private record Context(RuntimeExamSnapshot exam, Map<Long, UserSummary> users, List<ProctoringStudentView> students) {
+    private record Context(RuntimeExamProctoringContext exam, Map<Long, UserSummary> users,
+                           List<ProctoringStudentView> students) {
     }
 }

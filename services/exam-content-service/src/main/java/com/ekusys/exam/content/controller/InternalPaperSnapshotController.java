@@ -23,6 +23,10 @@ public class InternalPaperSnapshotController {
     @PostMapping("/papers/{paperId}") public ApiResponse<PaperSnapshotView> create(@PathVariable Long paperId) { return ApiResponse.ok(service.create(paperId)); }
     @GetMapping("/{id}/delivery") public ApiResponse<PaperSnapshotView> delivery(@PathVariable Long id) { return ApiResponse.ok(service.get(id,false)); }
     @GetMapping("/{id}/grading") public ApiResponse<PaperSnapshotView> grading(@PathVariable Long id) { return ApiResponse.ok(service.get(id,true)); }
+    @PostMapping("/{id}/cache-warm") public ApiResponse<Void> warm(@PathVariable Long id) {
+        service.warm(id);
+        return ApiResponse.ok(null);
+    }
     @GetMapping("/papers/{paperId}") public ApiResponse<PaperSummary> summary(@PathVariable Long paperId) {
         Paper paper = paperMapper.selectById(paperId);
         return ApiResponse.ok(paper == null ? null : new PaperSummary(

@@ -17,7 +17,8 @@ import com.ekusys.exam.exam.dto.StudentExamQuestionView;
 import com.ekusys.exam.exam.dto.StudentExamView;
 import com.ekusys.exam.exam.dto.SubmitExamRequest;
 import com.ekusys.exam.exam.dto.SubmitResultView;
-import com.ekusys.exam.management.api.RuntimeExamSnapshot;
+import com.ekusys.exam.management.api.RuntimeExamAdmission;
+import com.ekusys.exam.management.api.RuntimeExamMetadata;
 import com.ekusys.exam.runtime.api.GradingAnswerInput;
 import com.ekusys.exam.runtime.api.GradingSubmissionInput;
 import com.ekusys.exam.runtime.client.ManagementRuntimeClient;
@@ -26,6 +27,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -60,7 +62,8 @@ public class ExamRuntimeService {
 
     public List<StudentExamView> listStudent() {
         Long userId = requireUser();
-        return management.student(userId).getData().stream()
+        Set<Long> submittedExamIds = submittedExamIds(userId);
+        return management.summaries(userId).getData().stream()
             .map(snapshot -> StudentExamView.builder()
                 .examId(snapshot.examId())
                 .name(snapshot.name())
@@ -68,9 +71,9 @@ public class ExamRuntimeService {
                 .endTime(snapshot.endTime())
                 .durationMinutes(snapshot.durationMinutes())
                 .status(snapshot.status())
-                .submitted(submitted(snapshot.examId(), userId))
+                .submitted(submittedExamIds.contains(snapshot.examId()))
                 .proctoringLevel(snapshot.proctoringLevel())
-                .proctoringPolicy(policy(snapshot))
+                .proctoringPolicy(policy(snapshot.proctoringLevel(), snapshot.proctoringConfigJson()))
                 .build())
             .toList();
     }
@@ -78,11 +81,9 @@ public class ExamRuntimeService {
     @Transactional
     public StartExamResponse start(Long examId, StartExamRequest request) {
         Long userId = requireUser();
-        RuntimeExamSnapshot exam = management.snapshot(examId).getData();
+        RuntimeExamAdmission admission = management.admission(examId, userId).getData();
+        RuntimeExamMetadata exam = admission.metadata();
         LocalDateTime now = dbNow();
-        if (!exam.candidateIds().contains(userId)) {
-            throw new BusinessException("你不在本场考试名单中");
-        }
         if (now.isBefore(exam.startTime()) || now.isAfter(exam.endTime())) {
             throw new BusinessException("当前不在考试时间内");
         }
@@ -123,7 +124,7 @@ public class ExamRuntimeService {
                             id,exam_id,student_id,status,paper_snapshot_id,timeout_submit,create_time,update_time
                         ) values(?,?,?,'IN_PROGRESS',?,0,current_timestamp(3),current_timestamp(3))
                         """,
-                    IdWorker.getId(), examId, userId, exam.paper().snapshotId()
+                    IdWorker.getId(), examId, userId, admission.paper().snapshotId()
                 );
                 outbox.sessionStarted(examId, userId);
                 session = new SessionRow(sessionId, now, deadline, "ANSWERING");
@@ -148,7 +149,7 @@ public class ExamRuntimeService {
         }
 
         SnapshotDraft draft = snapshotService.loadLatestDraft(examId, userId);
-        List<StudentExamQuestionView> questions = exam.paper().questions().stream()
+        List<StudentExamQuestionView> questions = admission.paper().questions().stream()
             .map(question -> question(question, draft.answers().get(question.questionId())))
             .toList();
         return StartExamResponse.builder()
@@ -164,7 +165,7 @@ public class ExamRuntimeService {
             .leaseExpiresAt(lease.getLeaseExpiresAt())
             .heartbeatIntervalSeconds(lease.getHeartbeatIntervalSeconds())
             .leaseTimeoutSeconds(lease.getLeaseTimeoutSeconds())
-            .proctoringPolicy(policy(exam))
+            .proctoringPolicy(policy(exam.proctoringLevel(), exam.proctoringConfigJson()))
             .questions(questions)
             .build();
     }
@@ -268,7 +269,7 @@ public class ExamRuntimeService {
             throw new BusinessException("交卷记录不存在");
         }
         GradingSubmissionInput row = rows.getFirst();
-        RuntimeExamSnapshot exam = management.snapshot(row.examId()).getData();
+        RuntimeExamMetadata exam = management.metadata(row.examId()).getData();
         List<GradingAnswerInput> answers = jdbc.query(
             "select id,question_id,answer_text from submission_answer where submission_id=?",
             (rs, rowNum) -> new GradingAnswerInput(
@@ -340,12 +341,12 @@ public class ExamRuntimeService {
         return request == null ? null : request.getLeaseToken();
     }
 
-    private boolean submitted(Long examId, Long userId) {
-        Integer count = jdbc.queryForObject(
-            "select count(*) from submission where exam_id=? and student_id=? and status<>'IN_PROGRESS'",
-            Integer.class, examId, userId
-        );
-        return count != null && count > 0;
+    private Set<Long> submittedExamIds(Long userId) {
+        return Set.copyOf(jdbc.queryForList(
+            "select exam_id from submission where student_id=? and status<>'IN_PROGRESS'",
+            Long.class,
+            userId
+        ));
     }
 
     private StudentExamQuestionView question(PaperSnapshotQuestion question, String answer) {
@@ -370,13 +371,13 @@ public class ExamRuntimeService {
             .build();
     }
 
-    private ProctoringPolicyView policy(RuntimeExamSnapshot exam) {
+    private ProctoringPolicyView policy(String level, String configJson) {
         try {
-            return exam.proctoringConfigJson() == null
-                ? ProctoringPolicyView.builder().level(exam.proctoringLevel()).build()
-                : mapper.readValue(exam.proctoringConfigJson(), ProctoringPolicyView.class);
+            return configJson == null
+                ? ProctoringPolicyView.builder().level(level).build()
+                : mapper.readValue(configJson, ProctoringPolicyView.class);
         } catch (Exception exception) {
-            return ProctoringPolicyView.builder().level(exam.proctoringLevel()).build();
+            return ProctoringPolicyView.builder().level(level).build();
         }
     }
 
