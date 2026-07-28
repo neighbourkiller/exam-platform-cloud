@@ -14,8 +14,8 @@ import org.springframework.stereotype.Component;
  * <h3>三个定时任务</h3>
  * <table>
  *     <tr><th>任务</th><th>默认间隔</th><th>职责</th></tr>
- *     <tr><td>{@link #flushSnapshots()}</td><td>30 秒</td>
- *         <td>主落库任务：从 Redis 队列认领脏快照，并行写入 MySQL</td></tr>
+ *     <tr><td>{@link #flushSnapshots()}</td><td>30 秒轮询</td>
+ *         <td>主落库任务：认领已等待 15 分钟的脏快照，并行写入 MySQL</td></tr>
  *     <tr><td>{@link #reconcileSnapshots()}</td><td>5 分钟</td>
  *         <td>对账任务：发现并回收因宕机或异常而遗漏的脏快照</td></tr>
  *     <tr><td>{@link #cleanupFailedSnapshots()}</td><td>1 小时</td>
@@ -61,10 +61,11 @@ public class SnapshotFlushScheduler {
      *     <li>刷新积压指标（dirty/processing/failed 数量）供监控使用。</li>
      * </ol>
      *
-     * <p>配置项：{@code app.snapshot.flush-interval-ms}，默认 30000 毫秒（30 秒）。</p>
+     * <p>配置项：{@code app.snapshot.flush-poll-interval-ms}，默认 30000 毫秒（30 秒）。
+     * 快照首次变脏后的落库延迟由 {@code app.snapshot.flush-interval-ms} 控制，默认 15 分钟。</p>
      */
     @Scheduled(
-        fixedDelayString = "${app.snapshot.flush-interval-ms:30000}",
+        fixedDelayString = "${app.snapshot.flush-poll-interval-ms:30000}",
         scheduler = "snapshotFlushTaskScheduler"
     )
     public void flushSnapshots() {

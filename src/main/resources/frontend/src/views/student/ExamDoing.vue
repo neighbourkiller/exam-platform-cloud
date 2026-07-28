@@ -291,6 +291,7 @@ const DEFAULT_PROCTORING_POLICY = {
   repeatEventWindowMinutes: 10,
   repeatEventThreshold: 3
 }
+const SNAPSHOT_SYNC_INTERVAL_MS = 30_000
 let timer = null
 let snapshotTimer = null
 let inactivityTimer = null
@@ -1970,7 +1971,7 @@ const bootstrapExam = async () => {
   snapshotTimer = setInterval(() => {
     void syncDirtyDraft()
     void flushSyncQueue()
-  }, 15000)
+  }, SNAPSHOT_SYNC_INTERVAL_MS)
   scheduleNextHeartbeat({ initial: true })
   healthCheckTimer = setInterval(() => {
     void runHealthCheck()

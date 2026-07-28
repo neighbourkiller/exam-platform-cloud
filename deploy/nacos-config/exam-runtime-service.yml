@@ -8,7 +8,9 @@ app:
     lease-timeout-seconds: ${APP_CLIENT_LEASE_TIMEOUT_SECONDS:90}
     persistence-interval-seconds: ${APP_CLIENT_LEASE_PERSISTENCE_INTERVAL_SECONDS:60}
   snapshot:
-    flush-interval-ms: ${APP_SNAPSHOT_FLUSH_INTERVAL_MS:30000}
+    flush-interval-ms: ${APP_SNAPSHOT_FLUSH_INTERVAL_MS:900000}
+    flush-poll-interval-ms: ${APP_SNAPSHOT_FLUSH_POLL_INTERVAL_MS:30000}
+    flush-max-batches-per-run: ${APP_SNAPSHOT_FLUSH_MAX_BATCHES_PER_RUN:10}
     ttl-hours: ${APP_SNAPSHOT_TTL_HOURS:48}
     flush-batch-size: ${APP_SNAPSHOT_FLUSH_BATCH_SIZE:100}
     flush-worker-count: ${APP_SNAPSHOT_FLUSH_WORKER_COUNT:4}

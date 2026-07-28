@@ -4,7 +4,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "app.snapshot")
 public class SnapshotProperties {
-    private long flushIntervalMs = 30_000L;
+    private long flushIntervalMs = 900_000L;
+    private long flushPollIntervalMs = 30_000L;
+    private int flushMaxBatchesPerRun = 10;
     private long ttlHours = 48L;
     private int flushBatchSize = 100;
     private int flushWorkerCount = 4;
@@ -26,6 +28,22 @@ public class SnapshotProperties {
 
     public void setFlushIntervalMs(long flushIntervalMs) {
         this.flushIntervalMs = flushIntervalMs;
+    }
+
+    public long getFlushPollIntervalMs() {
+        return flushPollIntervalMs;
+    }
+
+    public void setFlushPollIntervalMs(long flushPollIntervalMs) {
+        this.flushPollIntervalMs = flushPollIntervalMs;
+    }
+
+    public int getFlushMaxBatchesPerRun() {
+        return flushMaxBatchesPerRun;
+    }
+
+    public void setFlushMaxBatchesPerRun(int flushMaxBatchesPerRun) {
+        this.flushMaxBatchesPerRun = flushMaxBatchesPerRun;
     }
 
     public long getTtlHours() {
@@ -64,6 +82,8 @@ public class SnapshotProperties {
     public void setFlushCleanupBatchSize(int flushCleanupBatchSize) { this.flushCleanupBatchSize = flushCleanupBatchSize; }
 
     public long safeFlushIntervalMs() { return Math.max(1_000L, flushIntervalMs); }
+    public long safeFlushPollIntervalMs() { return Math.max(1_000L, flushPollIntervalMs); }
+    public int safeFlushMaxBatchesPerRun() { return Math.max(1, flushMaxBatchesPerRun); }
     public int safeFlushBatchSize() { return Math.max(1, flushBatchSize); }
     public int safeFlushWorkerCount() { return Math.max(1, flushWorkerCount); }
     public long safeFlushLeaseMs() { return Math.max(1_000L, flushLeaseMs); }

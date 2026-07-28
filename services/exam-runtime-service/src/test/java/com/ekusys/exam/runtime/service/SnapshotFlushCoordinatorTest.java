@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,22 +24,26 @@ class SnapshotFlushCoordinatorTest {
     private SnapshotFlushCoordinator coordinator;
     private SnapshotFlushClaim claim;
     private ObjectMapper objectMapper;
+    private SnapshotProperties properties;
 
     @BeforeEach
     void setUp() {
         queue = mock(SnapshotFlushQueue.class);
         persistence = mock(SnapshotPersistenceService.class);
         objectMapper = new ObjectMapper().findAndRegisterModules();
-        SnapshotProperties properties = new SnapshotProperties();
+        properties = new SnapshotProperties();
         SnapshotFlushBackoffPolicy backoff = new SnapshotFlushBackoffPolicy(properties, () -> 0.5);
         SnapshotFlushMetrics metrics = new SnapshotFlushMetrics(new SimpleMeterRegistry());
         coordinator = new SnapshotFlushCoordinator(
             queue, persistence, new ExamAnswerInputValidator(), objectMapper,
-            backoff, metrics, Runnable::run
+            backoff, metrics, properties, Runnable::run
         );
         claim = new SnapshotFlushClaim("1:2", "lease-1");
-        when(queue.claimBatch()).thenReturn(new SnapshotFlushClaimBatch(List.of(claim), 0));
-        when(queue.backlog()).thenReturn(new SnapshotFlushBacklog(0, 0, 0));
+        when(queue.claimBatch()).thenReturn(
+            new SnapshotFlushClaimBatch(List.of(claim), 0),
+            new SnapshotFlushClaimBatch(List.of(), 0)
+        );
+        when(queue.backlog()).thenReturn(new SnapshotFlushBacklog(0, 0, 0, 0));
     }
 
     @Test
@@ -95,6 +100,36 @@ class SnapshotFlushCoordinatorTest {
 
         verify(queue).acknowledgeMissing(claim);
         verify(persistence, never()).persistDraft(any(), any(), any(), anyLong(), any());
+    }
+
+    @Test
+    void drainsMultipleBatchesUntilQueueIsEmpty() {
+        SnapshotFlushClaim secondClaim = new SnapshotFlushClaim("1:3", "lease-2");
+        when(queue.claimBatch()).thenReturn(
+            new SnapshotFlushClaimBatch(List.of(claim), 0),
+            new SnapshotFlushClaimBatch(List.of(secondClaim), 0),
+            new SnapshotFlushClaimBatch(List.of(), 0)
+        );
+        when(queue.read(claim)).thenReturn(SnapshotFlushRead.leaseLost());
+        when(queue.read(secondClaim)).thenReturn(SnapshotFlushRead.leaseLost());
+
+        coordinator.flushDue();
+
+        verify(queue, times(3)).claimBatch();
+        verify(queue).read(claim);
+        verify(queue).read(secondClaim);
+    }
+
+    @Test
+    void stopsAfterConfiguredMaximumBatchCount() {
+        properties.setFlushMaxBatchesPerRun(2);
+        when(queue.claimBatch()).thenReturn(new SnapshotFlushClaimBatch(List.of(claim), 0));
+        when(queue.read(claim)).thenReturn(SnapshotFlushRead.leaseLost());
+
+        coordinator.flushDue();
+
+        verify(queue, times(2)).claimBatch();
+        verify(queue, times(2)).read(claim);
     }
 
     private String payload(long version) throws Exception {

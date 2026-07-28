@@ -11,12 +11,16 @@ public class SnapshotFlushMetrics {
     private final AtomicLong dirty = new AtomicLong();
     private final AtomicLong processing = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
+    private final AtomicLong oldestDirtyOverdueMs = new AtomicLong();
 
     public SnapshotFlushMetrics(MeterRegistry registry) {
         this.registry = registry;
         registerGauge("dirty", dirty);
         registerGauge("processing", processing);
         registerGauge("failed", failed);
+        Gauge.builder("exam.snapshot.flush.oldest.dirty.overdue", oldestDirtyOverdueMs, AtomicLong::get)
+            .baseUnit("milliseconds")
+            .register(registry);
     }
 
     public void increment(String outcome) {
@@ -33,6 +37,7 @@ public class SnapshotFlushMetrics {
         dirty.set(backlog.dirty());
         processing.set(backlog.processing());
         failed.set(backlog.failed());
+        oldestDirtyOverdueMs.set(backlog.oldestDirtyOverdueMs());
     }
 
     private void registerGauge(String state, AtomicLong value) {

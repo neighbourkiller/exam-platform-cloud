@@ -28,8 +28,11 @@ services:
     healthcheck: { test: ["CMD-SHELL", "mysqladmin ping -h localhost -p\"$$MYSQL_ROOT_PASSWORD\""], interval: 5s, timeout: 3s, retries: 30 }
   redis:
     image: redis:7.4-alpine
-    ports: ["26379:6379"]
-    volumes: ["redis-data:/data"]
+    entrypoint: ["sh", "/usr/local/bin/exam-redis-entrypoint.sh"]
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports: ["127.0.0.1:26379:6379"]
+    volumes: ["redis-data:/data", "./deploy/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro", "./deploy/redis/entrypoint.sh:/usr/local/bin/exam-redis-entrypoint.sh:ro"]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, start_period: 20m, retries: 30 }
   rabbitmq:
     image: rabbitmq:4.1-management
     environment: { RABBITMQ_DEFAULT_USER: "${RABBITMQ_USERNAME:-exam}", RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}" }
@@ -79,7 +82,7 @@ services:
       DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
       JWT_PRIVATE_KEY_LOCATION: "/run/secrets/jwt_private_key"
       APP_DEFAULT_PASSWORD: "${APP_DEFAULT_PASSWORD:?APP_DEFAULT_PASSWORD is required}"
-    depends_on: { mysql: { condition: service_healthy }, nacos: { condition: service_started } }
+    depends_on: { mysql: { condition: service_healthy }, redis: { condition: service_healthy }, nacos: { condition: service_started } }
   academic-service:
     build: { context: ., args: { JAR_FILE: services/exam-academic-service/target/exam-academic-service-1.0.0-SNAPSHOT.jar } }
     environment: { <<: *service-env, SERVICE_CLIENT_ID: exam-academic-service, DB_USERNAME: exam_academic, DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}" }
@@ -89,12 +92,12 @@ services:
     build: { context: ., args: { JAR_FILE: services/exam-content-service/target/exam-content-service-1.0.0-SNAPSHOT.jar } }
     environment: { <<: *service-env, SERVICE_CLIENT_ID: exam-content-service, DB_USERNAME: exam_content, DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}" }
     secrets: [jwt_public_key]
-    depends_on: { mysql: { condition: service_healthy }, nacos: { condition: service_started } }
+    depends_on: { mysql: { condition: service_healthy }, redis: { condition: service_healthy }, nacos: { condition: service_started } }
   management-service:
     build: { context: ., args: { JAR_FILE: services/exam-management-service/target/exam-management-service-1.0.0-SNAPSHOT.jar } }
     environment: { <<: *service-env, SERVICE_CLIENT_ID: exam-management-service, DB_USERNAME: exam_management, DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}" }
     secrets: [jwt_public_key]
-    depends_on: { mysql: { condition: service_healthy }, nacos: { condition: service_started } }
+    depends_on: { mysql: { condition: service_healthy }, redis: { condition: service_healthy }, nacos: { condition: service_started } }
   runtime-service:
     build: { context: ., args: { JAR_FILE: services/exam-runtime-service/target/exam-runtime-service-1.0.0-SNAPSHOT.jar } }
     environment:
@@ -106,7 +109,7 @@ services:
       DB_USERNAME: exam_runtime
       DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
     secrets: [jwt_public_key]
-    depends_on: { mysql: { condition: service_healthy }, nacos: { condition: service_started }, xxl-job-admin: { condition: service_started } }
+    depends_on: { mysql: { condition: service_healthy }, redis: { condition: service_healthy }, nacos: { condition: service_started }, xxl-job-admin: { condition: service_started } }
   grading-service:
     build: { context: ., args: { JAR_FILE: services/exam-grading-service/target/exam-grading-service-1.0.0-SNAPSHOT.jar } }
     environment: { <<: *service-env, SERVICE_CLIENT_ID: exam-grading-service, DB_USERNAME: exam_grading, DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}" }

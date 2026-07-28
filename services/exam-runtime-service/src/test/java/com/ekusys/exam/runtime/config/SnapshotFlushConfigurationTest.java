@@ -39,6 +39,15 @@ class SnapshotFlushConfigurationTest {
     }
 
     @Test
+    void usesFifteenMinuteFlushDelayAndThirtySecondPollingByDefault() {
+        SnapshotProperties properties = new SnapshotProperties();
+
+        assertThat(properties.getFlushIntervalMs()).isEqualTo(900_000L);
+        assertThat(properties.getFlushPollIntervalMs()).isEqualTo(30_000L);
+        assertThat(properties.getFlushMaxBatchesPerRun()).isEqualTo(10);
+    }
+
+    @Test
     void allSnapshotSchedulesUseDedicatedScheduler() {
         for (String methodName : new String[]{
             "flushSnapshots", "reconcileSnapshots", "cleanupFailedSnapshots"
@@ -50,5 +59,16 @@ class SnapshotFlushConfigurationTest {
             Scheduled scheduled = method.getAnnotation(Scheduled.class);
             assertThat(scheduled.scheduler()).isEqualTo("snapshotFlushTaskScheduler");
         }
+    }
+
+    @Test
+    void flushScheduleUsesIndependentPollingInterval() {
+        Method method = org.springframework.util.ReflectionUtils.findMethod(
+            SnapshotFlushScheduler.class, "flushSnapshots"
+        );
+
+        assertThat(method).isNotNull();
+        assertThat(method.getAnnotation(Scheduled.class).fixedDelayString())
+            .isEqualTo("${app.snapshot.flush-poll-interval-ms:30000}");
     }
 }

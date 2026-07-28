@@ -1,6 +1,7 @@
 package com.ekusys.exam.runtime.service;
 
 import com.ekusys.exam.common.exception.BusinessException;
+import com.ekusys.exam.runtime.config.SnapshotProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
@@ -83,12 +84,16 @@ public class SnapshotFlushCoordinator {
     /** 快照处理专用线程池，支持批内并行处理 */
     private final Executor executor;
 
+    /** 快照落库参数：限制单次轮询连续处理的批次数 */
+    private final SnapshotProperties properties;
+
     public SnapshotFlushCoordinator(SnapshotFlushQueue queue,
                                     SnapshotPersistenceService persistence,
                                     ExamAnswerInputValidator validator,
                                     ObjectMapper objectMapper,
                                     SnapshotFlushBackoffPolicy backoffPolicy,
                                     SnapshotFlushMetrics metrics,
+                                    SnapshotProperties properties,
                                     @Qualifier("snapshotFlushExecutor") Executor executor) {
         this.queue = queue;
         this.persistence = persistence;
@@ -96,6 +101,7 @@ public class SnapshotFlushCoordinator {
         this.objectMapper = objectMapper;
         this.backoffPolicy = backoffPolicy;
         this.metrics = metrics;
+        this.properties = properties;
         this.executor = executor;
     }
 
@@ -109,6 +115,7 @@ public class SnapshotFlushCoordinator {
      *     <li>调用 {@link SnapshotFlushQueue#claimBatch()} 从 Redis Sorted Set 中认领
      *         一批 score 已到期的脏快照（同时回收过期租约）。</li>
      *     <li>将每个认领到的 claim 提交到 {@code snapshotFlushExecutor} 线程池并行处理。</li>
+     *     <li>连续认领直到没有到期数据，或达到单轮最大批次数。</li>
      *     <li>等待所有并行任务完成后，刷新积压指标。</li>
      * </ol>
      *
@@ -116,30 +123,28 @@ public class SnapshotFlushCoordinator {
      * 等待下一轮调度重试。</p>
      */
     public void flushDue() {
-        // 第一步：从 Redis 队列认领一批到期的脏快照
-        SnapshotFlushClaimBatch batch;
-        try {
-            batch = queue.claimBatch();
-        } catch (DataAccessException exception) {
-            // Redis 不可用：跳过本轮，下次再试
-            metrics.increment("redis_unavailable");
-            log.warn("Redis snapshot flush queue unavailable", exception);
-            return;
+        for (int index = 0; index < properties.safeFlushMaxBatchesPerRun(); index++) {
+            SnapshotFlushClaimBatch batch;
+            try {
+                batch = queue.claimBatch();
+            } catch (DataAccessException exception) {
+                metrics.increment("redis_unavailable");
+                log.warn("Redis snapshot flush queue unavailable", exception);
+                break;
+            }
+
+            metrics.increment("lease_recovered", batch.recoveredLeases());
+            metrics.increment("claimed", batch.claims().size());
+            if (batch.claims().isEmpty()) {
+                break;
+            }
+
+            List<CompletableFuture<Void>> tasks = batch.claims().stream()
+                .map(claim -> CompletableFuture.runAsync(() -> process(claim), executor))
+                .toList();
+            CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new)).join();
         }
 
-        // 记录本轮统计：回收的过期租约数、认领的快照数
-        metrics.increment("lease_recovered", batch.recoveredLeases());
-        metrics.increment("claimed", batch.claims().size());
-
-        // 第二步：并行处理每个快照
-        List<CompletableFuture<Void>> tasks = batch.claims().stream()
-            .map(claim -> CompletableFuture.runAsync(() -> process(claim), executor))
-            .toList();
-
-        // 第三步：阻塞等待所有并行任务完成
-        CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new)).join();
-
-        // 第四步：刷新积压指标（dirty/processing/failed 数量）
         refreshBacklog();
     }
 

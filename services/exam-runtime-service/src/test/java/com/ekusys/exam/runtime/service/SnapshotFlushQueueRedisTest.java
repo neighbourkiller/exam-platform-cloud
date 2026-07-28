@@ -32,7 +32,17 @@ class SnapshotFlushQueueRedisTest {
         int database = Integer.parseInt(value("snapshot.test.redis.database", "SNAPSHOT_TEST_REDIS_DATABASE", "0"));
         if (host == null) {
             try {
-                redisContainer = new GenericContainer<>("redis:7.4-alpine").withExposedPorts(6379);
+                redisContainer = new GenericContainer<>("redis:7.4-alpine")
+                    .withCommand(
+                        "redis-server",
+                        "--appendonly", "yes",
+                        "--appendfsync", "everysec",
+                        "--aof-use-rdb-preamble", "yes",
+                        "--save", "3600", "1",
+                        "--save", "300", "100",
+                        "--save", "60", "10000"
+                    )
+                    .withExposedPorts(6379);
                 redisContainer.start();
                 host = redisContainer.getHost();
                 port = redisContainer.getMappedPort(6379);
@@ -85,9 +95,52 @@ class SnapshotFlushQueueRedisTest {
     }
 
     @Test
+    void snapshotBecomesClaimableOnlyAfterFifteenMinuteDelay() {
+        first.save(1L, 2L, 100L, payload(100), 3_600_000L);
+
+        now.set(flushDueAt() - 1L);
+        assertThat(first.claimBatch().claims()).isEmpty();
+
+        now.set(flushDueAt());
+        assertThat(first.claimBatch().claims())
+            .extracting(SnapshotFlushClaim::member)
+            .containsExactly("1:2");
+    }
+
+    @Test
+    void backlogReportsOnlyTimePastTheScheduledFlushDeadline() {
+        first.save(1L, 2L, 100L, payload(100), 3_600_000L);
+
+        now.set(flushDueAt() - 1L);
+        assertThat(first.backlog().oldestDirtyOverdueMs()).isZero();
+
+        now.set(flushDueAt() + 2_500L);
+        assertThat(first.backlog().oldestDirtyOverdueMs()).isEqualTo(2_500L);
+    }
+
+    @Test
+    void managedRedisEnablesAofEverySecondAndKeepsRdbSchedules() throws Exception {
+        Assumptions.assumeTrue(redisContainer != null, "Container-managed Redis is required");
+
+        String appendOnly = redisContainer.execInContainer(
+            "redis-cli", "CONFIG", "GET", "appendonly"
+        ).getStdout();
+        String appendFsync = redisContainer.execInContainer(
+            "redis-cli", "CONFIG", "GET", "appendfsync"
+        ).getStdout();
+        String save = redisContainer.execInContainer(
+            "redis-cli", "CONFIG", "GET", "save"
+        ).getStdout();
+
+        assertThat(appendOnly).contains("appendonly", "yes");
+        assertThat(appendFsync).contains("appendfsync", "everysec");
+        assertThat(save).contains("3600 1", "300 100", "60 10000");
+    }
+
+    @Test
     void concurrentInstancesClaimMemberOnlyOnce() {
         first.save(1L, 2L, 100L, payload(100), 3_600_000L);
-        now.set(40_000L);
+        advanceToFlushDue();
 
         CompletableFuture<SnapshotFlushClaimBatch> one = CompletableFuture.supplyAsync(first::claimBatch);
         CompletableFuture<SnapshotFlushClaimBatch> two = CompletableFuture.supplyAsync(second::claimBatch);
@@ -103,10 +156,10 @@ class SnapshotFlushQueueRedisTest {
     @Test
     void expiredLeaseIsRecoveredAndOldTokenCannotAcknowledge() {
         first.save(1L, 2L, 100L, payload(100), 3_600_000L);
-        now.set(40_000L);
+        advanceToFlushDue();
         SnapshotFlushClaim oldClaim = first.claimBatch().claims().getFirst();
 
-        now.set(40_000L + fixture.properties.safeFlushLeaseMs() + 1L);
+        now.set(flushDueAt() + fixture.properties.safeFlushLeaseMs() + 1L);
         SnapshotFlushClaimBatch recovered = second.claimBatch();
         SnapshotFlushClaim newClaim = recovered.claims().getFirst();
 
@@ -118,7 +171,7 @@ class SnapshotFlushQueueRedisTest {
     @Test
     void oldWorkerCannotDeleteNewerSnapshot() {
         first.save(1L, 2L, 100L, payload(100), 3_600_000L);
-        now.set(40_000L);
+        advanceToFlushDue();
         SnapshotFlushClaim oldClaim = first.claimBatch().claims().getFirst();
 
         first.save(1L, 2L, 101L, payload(101), 3_600_000L);
@@ -131,7 +184,7 @@ class SnapshotFlushQueueRedisTest {
     @Test
     void transientFailureExtendsTtlAndSchedulesRetry() {
         first.save(1L, 2L, 100L, payload(100), 60_000L);
-        now.set(40_000L);
+        advanceToFlushDue();
         SnapshotFlushClaim claim = first.claimBatch().claims().getFirst();
 
         SnapshotFailureResult result = first.markFailure(
@@ -143,13 +196,13 @@ class SnapshotFlushQueueRedisTest {
         assertThat(result.quarantined()).isFalse();
         assertThat(redis.getExpire("exam:snapshot:1:2", TimeUnit.HOURS)).isGreaterThan(6L * 24L);
         assertThat(redis.opsForZSet().score(SnapshotFlushQueue.DIRTY_KEY, "1:2"))
-            .isEqualTo(45_000D);
+            .isEqualTo((double) (flushDueAt() + 5_000L));
     }
 
     @Test
     void poisonIsQuarantinedAndNewVersionReleasesIt() {
         first.save(1L, 2L, 100L, payload(100), 60_000L);
-        now.set(40_000L);
+        advanceToFlushDue();
         SnapshotFlushClaim claim = first.claimBatch().claims().getFirst();
 
         SnapshotFailureResult result = first.markFailure(
@@ -166,7 +219,7 @@ class SnapshotFlushQueueRedisTest {
     @Test
     void retryableFailureIsQuarantinedAtConfiguredLimit() {
         first.save(1L, 2L, 100L, payload(100), 60_000L);
-        now.set(40_000L);
+        advanceToFlushDue();
         SnapshotFlushClaim claim = first.claimBatch().claims().getFirst();
         redis.opsForHash().put(
             SnapshotFlushQueue.ATTEMPTS_KEY, "1:2",
@@ -185,7 +238,7 @@ class SnapshotFlushQueueRedisTest {
     @Test
     void cleanupRemovesOnlyExpiredQuarantinedVersion() {
         first.save(1L, 2L, 100L, payload(100), 60_000L);
-        now.set(40_000L);
+        advanceToFlushDue();
         SnapshotFlushClaim claim = first.claimBatch().claims().getFirst();
         first.markFailure(
             claim, 100L, new IllegalArgumentException("bad payload"),
@@ -222,7 +275,7 @@ class SnapshotFlushQueueRedisTest {
             .restartContainerCmd(redisContainer.getContainerId())
             .exec();
         awaitRedis();
-        now.set(40_000L);
+        advanceToFlushDue();
 
         assertThat(first.claimBatch().claims())
             .extracting(SnapshotFlushClaim::member)
@@ -231,6 +284,14 @@ class SnapshotFlushQueueRedisTest {
 
     private String payload(long version) {
         return "{\"snapshotVersion\":" + version + "}";
+    }
+
+    private long flushDueAt() {
+        return 1_000L + fixture.properties.safeFlushIntervalMs();
+    }
+
+    private void advanceToFlushDue() {
+        now.set(flushDueAt());
     }
 
     private void awaitRedis() throws Exception {
