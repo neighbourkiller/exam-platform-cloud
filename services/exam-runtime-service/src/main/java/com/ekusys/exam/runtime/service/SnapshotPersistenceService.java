@@ -21,6 +21,11 @@ public class SnapshotPersistenceService {
     }
 
     public SnapshotDraft loadDraft(Long examId, Long studentId) {
+        SubmissionDraftMetadata metadata = loadDraftMetadata(examId, studentId);
+        return loadDraft(metadata);
+    }
+
+    public SubmissionDraftMetadata loadDraftMetadata(Long examId, Long studentId) {
         List<SubmissionDraftRow> submissions = jdbc.query(
             """
                 select id,draft_version
@@ -32,9 +37,16 @@ public class SnapshotPersistenceService {
             examId, studentId
         );
         if (submissions.isEmpty()) {
-            return SnapshotDraft.empty();
+            return SubmissionDraftMetadata.empty();
         }
         SubmissionDraftRow submission = submissions.getFirst();
+        return new SubmissionDraftMetadata(submission.id(), submission.version(), true);
+    }
+
+    public SnapshotDraft loadDraft(SubmissionDraftMetadata metadata) {
+        if (metadata == null || !metadata.exists()) {
+            return SnapshotDraft.empty();
+        }
         Map<Long, String> answers = new LinkedHashMap<>();
         List<LocalDateTime> updatedTimes = new java.util.ArrayList<>();
         jdbc.query(
@@ -47,10 +59,10 @@ public class SnapshotPersistenceService {
                     updatedTimes.add(updatedAt.toLocalDateTime());
                 }
             },
-            submission.id()
+            metadata.submissionId()
         );
         LocalDateTime updatedAt = updatedTimes.stream().max(LocalDateTime::compareTo).orElse(null);
-        return new SnapshotDraft(Map.copyOf(answers), submission.version(), updatedAt);
+        return new SnapshotDraft(Map.copyOf(answers), metadata.version(), updatedAt);
     }
 
     @Transactional
@@ -148,5 +160,11 @@ public class SnapshotPersistenceService {
     }
 
     private record SubmissionDraftRow(Long id, long version) {
+    }
+
+    public record SubmissionDraftMetadata(Long submissionId, long version, boolean exists) {
+        public static SubmissionDraftMetadata empty() {
+            return new SubmissionDraftMetadata(null, 0L, false);
+        }
     }
 }

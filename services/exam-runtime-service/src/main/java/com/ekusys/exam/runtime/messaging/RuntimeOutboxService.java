@@ -1,6 +1,7 @@
 package com.ekusys.exam.runtime.messaging;
 
 import com.ekusys.exam.common.outbox.OutboxEventWriter;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -27,7 +28,7 @@ public class RuntimeOutboxService {
             ),
             submissionId
         );
-        String eventId = UUID.randomUUID().toString();
+        String eventId = submissionAcceptedEventId(submissionId);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("submissionId", submission.id());
         data.put("examId", submission.examId());
@@ -45,6 +46,12 @@ public class RuntimeOutboxService {
         event.put("producer", "exam-runtime-service");
         event.put("data", data);
         writer.append(eventId, "SUBMISSION", String.valueOf(submissionId), "SubmissionAccepted", event);
+    }
+
+    public String submissionAcceptedEventId(Long submissionId) {
+        return UUID.nameUUIDFromBytes(
+            ("SubmissionAccepted:" + submissionId).getBytes(StandardCharsets.UTF_8)
+        ).toString();
     }
 
     public void sessionStarted(Long examId, Long studentId) {

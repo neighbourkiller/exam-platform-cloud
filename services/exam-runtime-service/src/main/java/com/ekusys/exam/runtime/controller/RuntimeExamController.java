@@ -18,6 +18,7 @@ import com.ekusys.exam.exam.dto.StartExamResponse;
 import com.ekusys.exam.exam.dto.StudentExamView;
 import com.ekusys.exam.exam.dto.SubmitExamRequest;
 import com.ekusys.exam.exam.dto.SubmitResultView;
+import com.ekusys.exam.exam.dto.SubmissionStatusView;
 import com.ekusys.exam.runtime.service.AntiCheatEvidenceService;
 import com.ekusys.exam.runtime.service.ExamRuntimeService;
 import com.ekusys.exam.runtime.service.ProctoringService;
@@ -77,7 +78,13 @@ public class RuntimeExamController {
     @PreAuthorize("hasRole('STUDENT')")
     // Validation is deferred until the service confirms the session has not expired.
     public ApiResponse<SubmitResultView> submit(@PathVariable Long id, @RequestBody SubmitExamRequest request) {
-        return ApiResponse.ok("交卷成功", runtime.submit(id, request));
+        return ApiResponse.ok("交卷请求已接管", runtime.submit(id, request));
+    }
+
+    @GetMapping("/{id}/submission-status")
+    @PreAuthorize("hasRole('STUDENT')")
+    public ApiResponse<SubmissionStatusView> submissionStatus(@PathVariable Long id) {
+        return ApiResponse.ok(runtime.submissionStatus(id));
     }
 
     @PostMapping("/{id}/anti-cheat-events")

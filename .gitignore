@@ -55,6 +55,7 @@ src/main/resources/frontend/*.log
 .env.*.local
 .env.microservices
 deploy/secrets/
+deploy/load-test/tokens*.json
 
 ### AI / Agent Tooling ###
 CLAUDE.md

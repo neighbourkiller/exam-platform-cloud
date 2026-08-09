@@ -37,7 +37,8 @@ export const updateProctoringDispositionApi = (examId, studentId, data) =>
 export const startExamApi = (id, data = {}) => http.post(`/exams/${id}/start`, data)
 export const clientHeartbeatApi = (id, data, config = {}) => http.post(`/exams/${id}/client-heartbeat`, data, config)
 export const snapshotApi = (id, data, config = {}) => http.post(`/exams/${id}/snapshot`, data, config)
-export const submitExamApi = (id, data) => http.post(`/exams/${id}/submit`, data)
+export const submitExamApi = (id, data, config = {}) => http.post(`/exams/${id}/submit`, data, config)
+export const submissionStatusApi = (id, config = {}) => http.get(`/exams/${id}/submission-status`, config)
 export const antiCheatApi = (id, data, config = {}) => http.post(`/exams/${id}/anti-cheat-events`, data, config)
 export const uploadAntiCheatEvidenceApi = (id, formData) => http.post(`/exams/${id}/anti-cheat-evidence`, formData, {
   headers: { 'Content-Type': 'multipart/form-data' }

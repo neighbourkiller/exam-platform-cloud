@@ -1,3 +1,6 @@
 /mvnw text eol=lf
 *.cmd text eol=crlf
+/deploy/*.sh text eol=lf
+/deploy/mysql/init/*.sh text eol=lf
+/deploy/load-test/*.sh text eol=lf
 /deploy/redis/*.sh text eol=lf

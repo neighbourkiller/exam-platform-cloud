@@ -77,19 +77,20 @@ public class ExamSnapshotService {
     }
 
     public SnapshotDraft loadLatestDraft(Long examId, Long studentId) {
-        SnapshotDraft persisted = persistence.loadDraft(examId, studentId);
+        SnapshotPersistenceService.SubmissionDraftMetadata metadata =
+            persistence.loadDraftMetadata(examId, studentId);
         try {
             String json = queue.loadPayload(examId, studentId);
             if (json == null || json.isBlank()) {
-                return persisted;
+                return persistence.loadDraft(metadata);
             }
             SnapshotPayload payload = objectMapper.readValue(json, SnapshotPayload.class);
             if (!examId.equals(payload.examId()) || !studentId.equals(payload.studentId())) {
                 log.warn("Ignore mismatched snapshot payload: examId={}, studentId={}", examId, studentId);
-                return persisted;
+                return persistence.loadDraft(metadata);
             }
-            if (payload.snapshotVersion() <= persisted.version()) {
-                return persisted;
+            if (payload.snapshotVersion() <= metadata.version()) {
+                return persistence.loadDraft(metadata);
             }
             return new SnapshotDraft(
                 toAnswerMap(payload.answers()), payload.snapshotVersion(), parseReceivedAt(payload.serverReceivedAt())
@@ -97,10 +98,10 @@ public class ExamSnapshotService {
         } catch (DataAccessException exception) {
             log.warn("Redis snapshot load failed, use MySQL draft: examId={}, studentId={}",
                 examId, studentId, exception);
-            return persisted;
+            return persistence.loadDraft(metadata);
         } catch (JsonProcessingException exception) {
             log.error("Invalid Redis snapshot payload: examId={}, studentId={}", examId, studentId, exception);
-            return persisted;
+            return persistence.loadDraft(metadata);
         }
     }
 

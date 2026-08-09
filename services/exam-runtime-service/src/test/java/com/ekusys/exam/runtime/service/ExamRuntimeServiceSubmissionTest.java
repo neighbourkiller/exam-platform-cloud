@@ -27,10 +27,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.ResultSet;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 
 class ExamRuntimeServiceSubmissionTest {
     private static final long EXAM_ID = 11L;
@@ -143,6 +147,41 @@ class ExamRuntimeServiceSubmissionTest {
         verifyNoInteractions(fixture.validator, fixture.leaseService, fixture.outbox, fixture.snapshotService);
     }
 
+    @Test
+    void v2ExpiredSubmissionReturnsSubmittingWithoutPersistingRequestAnswers() throws Exception {
+        Fixture fixture = fixture(LocalDateTime.of(2026, 7, 12, 9, 59));
+        when(fixture.timeoutService.isV2Enabled()).thenReturn(true);
+        when(fixture.timeoutService.acceptExpired(
+            SESSION_ID, EXAM_ID, USER_ID, LocalDateTime.of(2026, 7, 12, 9, 59)
+        )).thenReturn("SUBMITTING");
+
+        try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(USER_ID);
+            var result = fixture.service.submit(EXAM_ID, new SubmitExamRequest());
+
+            assertThat(result.getStatus()).isEqualTo("SUBMITTING");
+        }
+
+        verifyNoInteractions(fixture.validator, fixture.leaseService, fixture.manualSubmissionService);
+    }
+
+    @Test
+    void v2SubmittedRetryReturnsExistingAcceptedResult() throws Exception {
+        Fixture fixture = fixture(LocalDateTime.of(2026, 7, 12, 10, 5));
+        fixture.sessionStatus.set("SUBMITTED");
+        when(fixture.timeoutService.isV2Enabled()).thenReturn(true);
+
+        try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(USER_ID);
+            var result = fixture.service.submit(EXAM_ID, new SubmitExamRequest());
+
+            assertThat(result.getSubmissionId()).isEqualTo(SUBMISSION_ID);
+            assertThat(result.getStatus()).isEqualTo("PROCESSING");
+        }
+
+        verifyNoInteractions(fixture.validator, fixture.leaseService, fixture.manualSubmissionService);
+    }
+
     private Fixture fixture(LocalDateTime deadline) throws Exception {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         RuntimeOutboxService outbox = mock(RuntimeOutboxService.class);
@@ -150,7 +189,18 @@ class ExamRuntimeServiceSubmissionTest {
         ExamSnapshotService snapshotService = mock(ExamSnapshotService.class);
         ExamClientLeaseService leaseService = mock(ExamClientLeaseService.class);
         ExamAnswerInputValidator validator = mock(ExamAnswerInputValidator.class);
+        com.ekusys.exam.runtime.repository.TimeoutTaskRepository timeoutTasks =
+            mock(com.ekusys.exam.runtime.repository.TimeoutTaskRepository.class);
+        ManualSubmissionService manualSubmissionService = mock(ManualSubmissionService.class);
+        SubmissionFinalPayloadService finalPayloads = mock(SubmissionFinalPayloadService.class);
+        TransactionTemplate transactions = mock(TransactionTemplate.class);
         LocalDateTime now = LocalDateTime.of(2026, 7, 12, 10, 0);
+        AtomicReference<String> sessionStatus = new AtomicReference<>("ANSWERING");
+
+        doAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(mock(TransactionStatus.class));
+        }).when(transactions).execute(any());
 
         doAnswer(invocation -> {
             RowMapper<?> rowMapper = invocation.getArgument(1);
@@ -158,7 +208,7 @@ class ExamRuntimeServiceSubmissionTest {
             when(resultSet.getLong("id")).thenReturn(SESSION_ID);
             when(resultSet.getObject("start_time", LocalDateTime.class)).thenReturn(now.minusMinutes(30));
             when(resultSet.getObject("deadline_time", LocalDateTime.class)).thenReturn(deadline);
-            when(resultSet.getString("status")).thenReturn("ANSWERING");
+            when(resultSet.getString("status")).thenAnswer(ignored -> sessionStatus.get());
             return List.of(rowMapper.mapRow(resultSet, 0));
         }).when(jdbc).query(
             contains("from exam_session"), any(RowMapper.class), eq(EXAM_ID), eq(USER_ID)
@@ -177,10 +227,15 @@ class ExamRuntimeServiceSubmissionTest {
             timeoutService,
             snapshotService,
             leaseService,
-            validator
+            validator,
+            timeoutTasks,
+            manualSubmissionService,
+            finalPayloads,
+            transactions
         );
         return new Fixture(
-            service, outbox, timeoutService, snapshotService, leaseService, validator, now
+            service, outbox, timeoutService, snapshotService, leaseService, validator,
+            manualSubmissionService, sessionStatus, now
         );
     }
 
@@ -202,6 +257,8 @@ class ExamRuntimeServiceSubmissionTest {
         ExamSnapshotService snapshotService,
         ExamClientLeaseService leaseService,
         ExamAnswerInputValidator validator,
+        ManualSubmissionService manualSubmissionService,
+        AtomicReference<String> sessionStatus,
         LocalDateTime now
     ) {
     }

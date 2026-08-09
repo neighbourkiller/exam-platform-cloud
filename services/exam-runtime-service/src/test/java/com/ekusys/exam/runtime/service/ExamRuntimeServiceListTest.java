@@ -43,7 +43,10 @@ class ExamRuntimeServiceListTest {
         ExamRuntimeService service = new ExamRuntimeService(
             jdbc, management, new ObjectMapper(), mock(RuntimeOutboxService.class),
             mock(TimeoutSubmissionService.class), mock(ExamSnapshotService.class),
-            mock(ExamClientLeaseService.class), mock(ExamAnswerInputValidator.class)
+            mock(ExamClientLeaseService.class), mock(ExamAnswerInputValidator.class),
+            mock(com.ekusys.exam.runtime.repository.TimeoutTaskRepository.class),
+            mock(ManualSubmissionService.class), mock(SubmissionFinalPayloadService.class),
+            mock(org.springframework.transaction.support.TransactionTemplate.class)
         );
 
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {

@@ -1,0 +1,4 @@
+services:
+  runtime-service:
+    environment:
+      APP_TIMEOUT_SUBMISSION_V2_ENABLED: "true"

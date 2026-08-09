@@ -94,7 +94,10 @@ class ExamSnapshotServiceTest {
         SnapshotDraft database = new SnapshotDraft(
             Map.of(11L, "database"), 90L, LocalDateTime.of(2026, 7, 6, 10, 0)
         );
-        when(persistence.loadDraft(1L, 2L)).thenReturn(database);
+        SnapshotPersistenceService.SubmissionDraftMetadata metadata =
+            new SnapshotPersistenceService.SubmissionDraftMetadata(9L, 90L, true);
+        when(persistence.loadDraftMetadata(1L, 2L)).thenReturn(metadata);
+        when(persistence.loadDraft(metadata)).thenReturn(database);
         when(queue.loadPayload(1L, 2L)).thenReturn(objectMapper.writeValueAsString(Map.of(
             "examId", 1L,
             "studentId", 2L,

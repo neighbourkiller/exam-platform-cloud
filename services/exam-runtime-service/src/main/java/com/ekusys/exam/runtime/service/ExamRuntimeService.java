@@ -17,12 +17,15 @@ import com.ekusys.exam.exam.dto.StudentExamQuestionView;
 import com.ekusys.exam.exam.dto.StudentExamView;
 import com.ekusys.exam.exam.dto.SubmitExamRequest;
 import com.ekusys.exam.exam.dto.SubmitResultView;
+import com.ekusys.exam.exam.dto.SubmissionStatusView;
 import com.ekusys.exam.management.api.RuntimeExamAdmission;
 import com.ekusys.exam.management.api.RuntimeExamMetadata;
 import com.ekusys.exam.runtime.api.GradingAnswerInput;
 import com.ekusys.exam.runtime.api.GradingSubmissionInput;
 import com.ekusys.exam.runtime.client.ManagementRuntimeClient;
 import com.ekusys.exam.runtime.messaging.RuntimeOutboxService;
+import com.ekusys.exam.runtime.repository.TimeoutTaskRepository;
+import com.ekusys.exam.runtime.service.ManualSubmissionService.ManualSubmissionResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -32,6 +35,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class ExamRuntimeService {
@@ -43,13 +47,21 @@ public class ExamRuntimeService {
     private final ExamSnapshotService snapshotService;
     private final ExamClientLeaseService clientLeaseService;
     private final ExamAnswerInputValidator answerInputValidator;
+    private final TimeoutTaskRepository timeoutTasks;
+    private final ManualSubmissionService manualSubmissionService;
+    private final SubmissionFinalPayloadService finalPayloads;
+    private final TransactionTemplate transactions;
 
     public ExamRuntimeService(JdbcTemplate jdbc, ManagementRuntimeClient management,
                               ObjectMapper mapper, RuntimeOutboxService outbox,
                               TimeoutSubmissionService timeoutSubmissionService,
                               ExamSnapshotService snapshotService,
                               ExamClientLeaseService clientLeaseService,
-                              ExamAnswerInputValidator answerInputValidator) {
+                              ExamAnswerInputValidator answerInputValidator,
+                              TimeoutTaskRepository timeoutTasks,
+                              ManualSubmissionService manualSubmissionService,
+                              SubmissionFinalPayloadService finalPayloads,
+                              TransactionTemplate transactions) {
         this.jdbc = jdbc;
         this.management = management;
         this.mapper = mapper;
@@ -58,6 +70,10 @@ public class ExamRuntimeService {
         this.snapshotService = snapshotService;
         this.clientLeaseService = clientLeaseService;
         this.answerInputValidator = answerInputValidator;
+        this.timeoutTasks = timeoutTasks;
+        this.manualSubmissionService = manualSubmissionService;
+        this.finalPayloads = finalPayloads;
+        this.transactions = transactions;
     }
 
     public List<StudentExamView> listStudent() {
@@ -148,6 +164,8 @@ public class ExamRuntimeService {
             }
         }
 
+        timeoutTasks.ensureTask(session.id(), examId, userId, session.deadline());
+
         SnapshotDraft draft = snapshotService.loadLatestDraft(examId, userId);
         List<StudentExamQuestionView> questions = admission.paper().questions().stream()
             .map(question -> question(question, draft.answers().get(question.questionId())))
@@ -197,16 +215,93 @@ public class ExamRuntimeService {
         return ack;
     }
 
-    @Transactional
     public SubmitResultView submit(Long examId, SubmitExamRequest request) {
         Long userId = requireUser();
+        if (!timeoutSubmissionService.isV2Enabled()) {
+            SubmitResultView result = transactions.execute(
+                status -> submitLegacy(examId, userId, request)
+            );
+            if (result == null) {
+                throw new IllegalStateException("交卷事务未返回结果");
+            }
+            return result;
+        }
+
+        SessionRow session = session(examId, userId);
+        Long submissionId = submissionId(examId, userId);
+        if ("SUBMITTED".equals(session.status())) {
+            return submitResult(submissionId, "PROCESSING");
+        }
+        if ("AUTO_SUBMITTING".equals(session.status())) {
+            return submitResult(submissionId, "SUBMITTING");
+        }
+        if (!"ANSWERING".equals(session.status())) {
+            throw new BusinessException("会话已结束");
+        }
+
+        LocalDateTime now = dbNow();
+        boolean expired = !now.isBefore(session.deadline());
+        if (expired) {
+            String status = timeoutSubmissionService.acceptExpired(
+                session.id(), examId, userId, session.deadline()
+            );
+            return submitResult(submissionId, status);
+        }
+        answerInputValidator.validateSubmitRequest(request);
+        clientLeaseService.requireCurrent(session.id(), request.getClientId(), request.getLeaseToken(), now);
+
+        long draftVersion = submissionDraftVersion(submissionId);
+        SubmissionFinalPayloadService.EncodedFinalAnswers encoded =
+            finalPayloads.encode(request.getAnswers(), draftVersion);
+        ManualSubmissionResult result = manualSubmissionService.submit(
+            session.id(), examId, userId, session.deadline(), submissionId, request, encoded
+        );
+        if ("PROCESSING".equals(result.status())) {
+            snapshotService.clearAfterCommit(examId, userId);
+            clientLeaseService.clearAfterCommit(examId, userId, request.getLeaseToken());
+        }
+        return submitResult(submissionId, result.status());
+    }
+
+    public SubmissionStatusView submissionStatus(Long examId) {
+        Long userId = requireUser();
+        List<SubmissionStatusView> rows = jdbc.query(
+            """
+                select sub.id submission_id,s.status session_status,
+                       sub.status submission_status,sub.timeout_submit,sub.submitted_at,
+                       task.status timeout_task_status
+                  from exam_session s
+                  left join submission sub
+                    on sub.exam_id=s.exam_id and sub.student_id=s.student_id
+                  left join submission_timeout_task task on task.session_id=s.id
+                 where s.exam_id=? and s.student_id=?
+                 limit 1
+                """,
+            (rs, rowNum) -> SubmissionStatusView.builder()
+                .submissionId(rs.getObject("submission_id", Long.class))
+                .sessionStatus(rs.getString("session_status"))
+                .submissionStatus(rs.getString("submission_status"))
+                .timeoutTaskStatus(rs.getString("timeout_task_status"))
+                .timeoutSubmit(rs.getObject("timeout_submit") == null
+                    ? null : rs.getBoolean("timeout_submit"))
+                .submittedAt(rs.getObject("submitted_at", LocalDateTime.class))
+                .build(),
+            examId, userId
+        );
+        if (rows.isEmpty()) {
+            throw new BusinessException("考试会话不存在");
+        }
+        return rows.getFirst();
+    }
+
+    private SubmitResultView submitLegacy(Long examId, Long userId, SubmitExamRequest request) {
         SessionRow session = active(examId, userId);
         LocalDateTime now = dbNow();
         boolean expired = !now.isBefore(session.deadline());
         Long submissionId = submissionId(examId, userId);
         if (expired) {
             timeoutSubmissionService.submitExpired(session.id(), examId, userId);
-            return SubmitResultView.builder().submissionId(submissionId).status("PROCESSING").build();
+            return submitResult(submissionId, "PROCESSING");
         }
         answerInputValidator.validateSubmitRequest(request);
         clientLeaseService.requireCurrent(session.id(), request.getClientId(), request.getLeaseToken(), now);
@@ -235,7 +330,7 @@ public class ExamRuntimeService {
         outbox.submissionAccepted(submissionId);
         snapshotService.clearAfterCommit(examId, userId);
         clientLeaseService.clearAfterCommit(examId, userId, request.getLeaseToken());
-        return SubmitResultView.builder().submissionId(submissionId).status("PROCESSING").build();
+        return submitResult(submissionId, "PROCESSING");
     }
 
     @Transactional
@@ -270,13 +365,15 @@ public class ExamRuntimeService {
         }
         GradingSubmissionInput row = rows.getFirst();
         RuntimeExamMetadata exam = management.metadata(row.examId()).getData();
-        List<GradingAnswerInput> answers = jdbc.query(
-            "select id,question_id,answer_text from submission_answer where submission_id=?",
-            (rs, rowNum) -> new GradingAnswerInput(
-                rs.getLong("id"), rs.getLong("question_id"), rs.getString("answer_text")
-            ),
-            submissionId
-        );
+        List<GradingAnswerInput> answers = finalPayloads.hasPayload(submissionId)
+            ? finalPayloads.loadForGrading(submissionId)
+            : jdbc.query(
+                "select id,question_id,answer_text from submission_answer where submission_id=?",
+                (rs, rowNum) -> new GradingAnswerInput(
+                    rs.getLong("id"), rs.getLong("question_id"), rs.getString("answer_text")
+                ),
+                submissionId
+            );
         return new GradingSubmissionInput(
             row.submissionId(), row.examId(), row.studentId(), exam.name(), exam.passScore(),
             row.paperSnapshotId(), row.submittedAt(), answers
@@ -311,9 +408,17 @@ public class ExamRuntimeService {
     }
 
     private SessionRow active(Long examId, Long userId) {
-        List<SessionRow> rows = findSessions(examId, userId);
-        if (rows.isEmpty() || !"ANSWERING".equals(rows.getFirst().status())) {
+        SessionRow row = session(examId, userId);
+        if (!"ANSWERING".equals(row.status())) {
             throw new BusinessException("会话已结束");
+        }
+        return row;
+    }
+
+    private SessionRow session(Long examId, Long userId) {
+        List<SessionRow> rows = findSessions(examId, userId);
+        if (rows.isEmpty()) {
+            throw new BusinessException("考试会话不存在");
         }
         return rows.getFirst();
     }
@@ -323,6 +428,19 @@ public class ExamRuntimeService {
             "select id from submission where exam_id=? and student_id=?",
             Long.class, examId, userId
         );
+    }
+
+    private long submissionDraftVersion(Long submissionId) {
+        Long version = jdbc.queryForObject(
+            "select draft_version from submission where id=?",
+            Long.class,
+            submissionId
+        );
+        return version == null ? 0L : version;
+    }
+
+    private SubmitResultView submitResult(Long submissionId, String status) {
+        return SubmitResultView.builder().submissionId(submissionId).status(status).build();
     }
 
     private String clientId(StartExamRequest request) {

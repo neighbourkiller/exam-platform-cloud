@@ -24,7 +24,7 @@ INSERT INTO xxl_job_info(job_group,job_desc,add_time,update_time,author,alarm_em
     executor_block_strategy,executor_timeout,executor_fail_retry_count,glue_type,glue_source,glue_remark,
     glue_updatetime,child_jobid,trigger_status,trigger_last_time,trigger_next_time)
 SELECT @exam_job_group,'考试超时自动交卷',NOW(),NOW(),'exam-platform','',
-       'CRON','0/10 * * * * ?','DO_NOTHING','SHARDING_BROADCAST','examTimeoutSubmitJob','',
+       'CRON','0/2 * * * * ?','DO_NOTHING','SHARDING_BROADCAST','examTimeoutSubmitJob','',
        'SERIAL_EXECUTION',0,0,'BEAN','','GLUE代码初始化',NOW(),'',1,0,0
 WHERE NOT EXISTS (
     SELECT 1 FROM xxl_job_info

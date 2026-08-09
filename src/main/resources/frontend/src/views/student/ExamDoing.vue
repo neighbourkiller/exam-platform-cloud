@@ -1,5 +1,12 @@
 <template>
-  <div class="exam-shell">
+  <div :class="['exam-shell', { 'exam-shell--ending': endingExam }]" :aria-busy="endingExam">
+    <div v-if="endingExam" class="submission-overlay" role="status" aria-live="polite">
+      <div class="submission-overlay__card">
+        <el-icon class="submission-overlay__spinner" :size="34"><Loading /></el-icon>
+        <h2>正在完成交卷</h2>
+        <p>{{ submissionProgressText }}</p>
+      </div>
+    </div>
     <header class="exam-header">
       <div class="exam-header__meta">
         <p class="exam-header__eyebrow">在线考试</p>
@@ -46,6 +53,7 @@
               v-model="showMarkedOnly"
               size="small"
               active-text="只看标记"
+              :disabled="endingExam"
             />
           </div>
           <div class="outline-grid">
@@ -61,6 +69,7 @@
                 }
               ]"
               type="button"
+              :disabled="endingExam"
               @click="goToQuestion(q.questionId)"
             >
               <span class="outline-item__marker" aria-hidden="true"></span>
@@ -92,6 +101,7 @@
                 :type="isQuestionMarked(currentQuestion) ? 'warning' : 'info'"
                 :plain="!isQuestionMarked(currentQuestion)"
                 size="small"
+                :disabled="endingExam"
                 @click="toggleQuestionMark(currentQuestion)"
               >
                 {{ isQuestionMarked(currentQuestion) ? '取消标记' : '标记' }}
@@ -121,7 +131,7 @@
 
           <div class="q-answer">
             <template v-if="currentQuestion.type === 'MULTI'">
-              <el-checkbox-group v-model="answers[currentQuestion.questionId]" class="option-list">
+              <el-checkbox-group v-model="answers[currentQuestion.questionId]" class="option-list" :disabled="endingExam">
                 <el-checkbox
                   v-for="opt in parseOptions(currentQuestion)"
                   :key="`${currentQuestion.questionId}-${opt.label}`"
@@ -135,7 +145,7 @@
             </template>
 
             <template v-else-if="currentQuestion.type === 'SINGLE' || currentQuestion.type === 'JUDGE'">
-              <el-radio-group v-model="answers[currentQuestion.questionId]" class="option-list">
+              <el-radio-group v-model="answers[currentQuestion.questionId]" class="option-list" :disabled="endingExam">
                 <el-radio
                   v-for="opt in parseOptions(currentQuestion)"
                   :key="`${currentQuestion.questionId}-${opt.label}`"
@@ -157,16 +167,17 @@
                 show-word-limit
                 resize="none"
                 placeholder="请输入答案"
+                :disabled="endingExam"
               />
             </template>
           </div>
 
           <div class="q-navigation">
-            <el-button size="large" :disabled="isFirstVisibleQuestion" @click="goToPreviousQuestion">
+            <el-button size="large" :disabled="endingExam || isFirstVisibleQuestion" @click="goToPreviousQuestion">
               上一题
             </el-button>
             <span class="q-navigation__progress">{{ currentQuestionPosition }}/{{ visibleQuestions.length }}</span>
-            <el-button size="large" type="primary" :disabled="isLastVisibleQuestion" @click="goToNextQuestion">
+            <el-button size="large" type="primary" :disabled="endingExam || isLastVisibleQuestion" @click="goToNextQuestion">
               下一题
             </el-button>
           </div>
@@ -184,7 +195,13 @@
         <span>已完成 {{ answeredCount }} 题</span>
         <span>已标记 {{ markedCount }} 题</span>
       </div>
-      <el-button type="primary" size="large" :disabled="leaseState.conflict" @click="submit">交卷</el-button>
+      <el-button
+        type="primary"
+        size="large"
+        :loading="endingExam"
+        :disabled="endingExam || leaseState.conflict"
+        @click="submit"
+      >{{ endingExam ? '交卷处理中' : '交卷' }}</el-button>
     </footer>
   </div>
 </template>
@@ -193,7 +210,8 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { antiCheatApi, clientHeartbeatApi, healthPingApi, snapshotApi, startExamApi, submitExamApi, uploadAntiCheatEvidenceApi } from '../../api'
+import { Loading } from '@element-plus/icons-vue'
+import { antiCheatApi, clientHeartbeatApi, healthPingApi, snapshotApi, startExamApi, submissionStatusApi, submitExamApi, uploadAntiCheatEvidenceApi } from '../../api'
 import { useAuthStore } from '../../stores/auth'
 import { useCameraProctoring } from '../../composables/useCameraProctoring'
 import {
@@ -213,6 +231,12 @@ import {
   updateExamClientLease
 } from '../../utils/examClientLease'
 import { parseDateTime } from '../../utils/datetime'
+import {
+  createSubmissionPlan,
+  isSubmissionAccepted,
+  shouldRetryDeadlineWithAnswers,
+  submissionPollDelay
+} from '../../utils/submissionFlow'
 
 const route = useRoute()
 const router = useRouter()
@@ -239,6 +263,7 @@ const hiddenStartedAt = ref(null)
 const offlineStartedAt = ref(null)
 const lastActivityAt = ref(Date.now())
 const endingExam = ref(false)
+const submissionProgressText = ref('正在将交卷请求交给服务器，请勿重复操作。')
 const allowLeaveExam = ref(false)
 const isOnline = ref(navigator.onLine)
 const networkState = reactive({
@@ -307,6 +332,7 @@ let navigationLeaveReporting = false
 let lastNavigationLeaveAttemptAt = 0
 let inactivityEventOpen = false
 let leaseRequestTail = Promise.resolve()
+let submissionPromise = null
 let lastLeaseRenewedAt = 0
 const recentEventTimes = new Map()
 const cameraProctoring = useCameraProctoring({
@@ -393,6 +419,13 @@ const formatClockTime = (timestamp) => {
 }
 
 const saveStatus = computed(() => {
+  if (endingExam.value) {
+    return {
+      type: 'warning',
+      title: '交卷处理中',
+      detail: submissionProgressText.value
+    }
+  }
   if (syncState.localSaveFailed) {
     return {
       type: 'danger',
@@ -1606,55 +1639,42 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
   }
 }
 
-const submit = async (needConfirm = true) => {
-  if (!navigator.onLine) {
-    pendingSubmitIntent.value = { attemptedAt: Date.now() }
-    await persistDraftState({
-      updatedAt: Date.now(),
-      lastSyncedAt: syncState.lastSyncedAt,
-      dirty: true,
-      nextPendingSubmitIntent: pendingSubmitIntent.value
-    })
-    ElMessage.warning('当前网络已断开，答案已保存在本地草稿。请恢复网络后再交卷。')
-    return
-  }
-  if (isExamExpiredLocally() && syncState.dirty) {
-    await persistDraftState({
-      updatedAt: Date.now(),
-      lastSyncedAt: syncState.lastSyncedAt,
-      dirty: true
-    })
-    ElMessage.warning('考试作答时间已结束，本机未同步答案不会补交，系统将以服务端最后同步快照自动交卷。')
-    return
-  }
-  const validationError = answerPayloadValidationError(buildSubmitPayload())
-  if (validationError) {
-    ElMessage.error(validationError)
-    return
-  }
-  if (needConfirm) {
-    await ElMessageBox.confirm('确认提交试卷？提交后不可修改。', '提示')
-  }
-  await persistDraftState({
-    updatedAt: Date.now(),
-    lastSyncedAt: syncState.lastSyncedAt,
-    dirty: true,
-    nextPendingSubmitIntent: null
-  })
-  const synced = await syncDirtyDraft({ force: true })
-  if (!synced && syncState.dirty) {
-    ElMessage.warning(syncState.lastSyncErrorMessage || '当前网络不稳定，答案已保存在本机。请等待同步成功后再交卷。')
-    return
-  }
-  try {
-    await runLeaseRequest(() => submitExamApi(examId, withClientLeasePayload(buildSubmitPayload())))
-  } catch (error) {
-    if (await handleExamClientLeaseError(error)) {
-      return
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
+const pollSubmissionStatus = async () => {
+  let lastError = null
+  const stopAt = Date.now() + 45_000
+  let attempt = 0
+  while (Date.now() < stopAt) {
+    attempt += 1
+    try {
+      const remaining = Math.max(500, stopAt - Date.now())
+      const status = await submissionStatusApi(examId, {
+        silent: true,
+        timeout: Math.min(5000, remaining)
+      })
+      if (status?.timeoutTaskStatus === 'FAILED') {
+        throw new Error('自动交卷任务暂时处理失败，系统已记录并会由管理员处理。')
+      }
+      if (isSubmissionAccepted(status)) {
+        return status
+      }
+    } catch (error) {
+      lastError = error
+      if (!isRecoverableNetworkError(error)) {
+        throw error
+      }
     }
-    throw error
+    submissionProgressText.value = `正在确认服务器交卷状态（第 ${attempt} 次）…`
+    const jitteredDelay = submissionPollDelay(attempt)
+    await wait(Math.min(jitteredDelay, Math.max(0, stopAt - Date.now())))
   }
+  throw lastError || new Error('暂时无法确认交卷状态')
+}
+
+const completeSubmissionUi = async (result = {}) => {
   allowLeaveExam.value = true
+  stopExamRuntimeTimers()
   if (draftSaveTimer) {
     clearTimeout(draftSaveTimer)
     draftSaveTimer = null
@@ -1667,22 +1687,145 @@ const submit = async (needConfirm = true) => {
   syncState.dirty = false
   cameraProctoring.stop()
   await exitFullscreenForExamEnd()
-  try {
-    await ElMessageBox.confirm('试卷已提交，系统正在处理成绩。是否前往考试结果中心查看成绩状态？', '提交成功', {
-      confirmButtonText: '查看考试结果',
-      cancelButtonText: '返回我的考试',
-      type: 'success',
-      distinguishCancelAndClose: true,
-      closeOnClickModal: false,
-      closeOnPressEscape: false,
-      showClose: false
+  const status = String(result?.status || result?.sessionStatus || '').toUpperCase()
+  ElMessage.success(status === 'SUBMITTING' || status === 'AUTO_SUBMITTING'
+    ? '交卷请求已由服务器接管，完成后会自动进入判分。'
+    : '试卷已提交，系统正在处理成绩。')
+  await router.replace('/student/results')
+}
+
+const waitForOfflineDeadlineConfirmation = async () => {
+  endingExam.value = true
+  submissionProgressText.value = '本机倒计时已结束，等待网络恢复并由服务器确认交卷状态。'
+  if (offlineStartedAt.value == null) {
+    offlineStartedAt.value = Date.now()
+  }
+  pendingSubmitIntent.value = { attemptedAt: Date.now() }
+  await persistDraftState({
+    updatedAt: Date.now(),
+    lastSyncedAt: syncState.lastSyncedAt,
+    dirty: true,
+    nextPendingSubmitIntent: pendingSubmitIntent.value
+  })
+  ElMessage.warning('当前网络不可用，本地答案已保留；恢复网络后将由服务器确认交卷。')
+}
+
+const submit = async (needConfirm = true) => {
+  if (submissionPromise) {
+    return submissionPromise
+  }
+  const deadlineReached = isExamExpiredLocally()
+  const submissionPlan = createSubmissionPlan({
+    online: navigator.onLine,
+    deadlineReached
+  })
+  if (submissionPlan.mode === 'OFFLINE_DEADLINE_WAIT') {
+    return waitForOfflineDeadlineConfirmation()
+  }
+  if (submissionPlan.mode === 'OFFLINE_WAIT') {
+    pendingSubmitIntent.value = { attemptedAt: Date.now() }
+    await persistDraftState({
+      updatedAt: Date.now(),
+      lastSyncedAt: syncState.lastSyncedAt,
+      dirty: true,
+      nextPendingSubmitIntent: pendingSubmitIntent.value
     })
-    router.push('/student/results')
-  } catch (action) {
-    if (action === 'cancel') {
-      router.push('/student/exams')
+    ElMessage.warning('当前网络已断开，答案已保存在本地草稿。请恢复网络后再交卷。')
+    return
+  }
+  if (submissionPlan.validate) {
+    const validationError = answerPayloadValidationError(buildSubmitPayload())
+    if (validationError) {
+      ElMessage.error(validationError)
+      return
     }
   }
+  if (needConfirm && submissionPlan.validate) {
+    await ElMessageBox.confirm('确认提交试卷？提交后不可修改。', '提示')
+  }
+  await persistDraftState({
+    updatedAt: Date.now(),
+    lastSyncedAt: syncState.lastSyncedAt,
+    dirty: true,
+    nextPendingSubmitIntent: null
+  })
+  if (submissionPlan.sync) {
+    const synced = await syncDirtyDraft({ force: true })
+    if (!synced && syncState.dirty) {
+      ElMessage.warning(syncState.lastSyncErrorMessage || '当前网络不稳定，答案已保存在本机。请等待同步成功后再交卷。')
+      return
+    }
+  }
+
+  endingExam.value = true
+  submissionProgressText.value = deadlineReached
+    ? '考试已截止，正在通知服务器接管自动交卷。'
+    : '正在提交最终答案，请勿重复操作。'
+  submissionPromise = (async () => {
+    try {
+      let result
+      try {
+        const submitPayload = submissionPlan.stripAnswers
+          ? withClientLeasePayload({ answers: [] })
+          : withClientLeasePayload(buildSubmitPayload())
+        const request = () => submitExamApi(
+          examId,
+          submitPayload,
+          { silent: true, timeout: 10000 }
+        )
+        try {
+          result = submissionPlan.mode === 'ACTIVE_SUBMIT'
+            ? await runLeaseRequest(request)
+            : await request()
+        } catch (error) {
+          if (!shouldRetryDeadlineWithAnswers(submissionPlan, error)) {
+            throw error
+          }
+          submissionProgressText.value = '服务端尚未截止，正在提交当前完整答案。'
+          result = await runLeaseRequest(() => submitExamApi(
+            examId,
+            withClientLeasePayload(buildSubmitPayload()),
+            { silent: true, timeout: 10000 }
+          ))
+        }
+      } catch (error) {
+        if (await handleExamClientLeaseError(error)) {
+          return
+        }
+        if (!isRecoverableNetworkError(error)) {
+          throw error
+        }
+        submissionProgressText.value = '交卷请求结果暂时不确定，正在查询服务器权威状态。'
+        result = await pollSubmissionStatus()
+      }
+      if (!isSubmissionAccepted(result)) {
+        submissionProgressText.value = '服务器正在接管交卷，正在确认最终状态。'
+        result = await pollSubmissionStatus()
+      }
+      await completeSubmissionUi(result)
+    } catch (error) {
+      if (deadlineReached) {
+        endingExam.value = false
+        pendingSubmitIntent.value = { attemptedAt: Date.now() }
+        await persistDraftState({
+          updatedAt: Date.now(),
+          lastSyncedAt: syncState.lastSyncedAt,
+          dirty: true,
+          nextPendingSubmitIntent: pendingSubmitIntent.value
+        })
+        submissionProgressText.value = '暂时无法确认服务端交卷状态，请保持页面并重试。'
+        const reason = error?.message ? `${error.message}；` : ''
+        ElMessage.warning(`${reason}本地答案已保留，请保持页面并重试。`)
+        return
+      }
+      endingExam.value = false
+      submissionProgressText.value = '正在将交卷请求交给服务器，请勿重复操作。'
+      ElMessage.error(error?.message || '交卷失败，请重试。')
+    } finally {
+      submissionPromise = null
+    }
+  })()
+  return submissionPromise
 }
 
 const exitFullscreenForExamEnd = async () => {
@@ -1785,6 +1928,11 @@ const onOnline = async () => {
   if (offlineStartedAt.value == null) {
     resetBanner()
     await flushSyncQueue({ force: true })
+    if (pendingSubmitIntent.value && isExamExpiredLocally()) {
+      showBanner('warning', '网络已恢复，正在确认交卷', '服务器将判断实际截止状态并接管交卷。', true)
+      void submit(false)
+      return
+    }
     void syncDirtyDraft({ force: shouldNotify, notify: shouldNotify })
     return
   }
@@ -1793,7 +1941,8 @@ const onOnline = async () => {
   await reportAntiCheatEvent('NETWORK_OFFLINE', durationMs, { recovered: true })
   await flushSyncQueue({ force: true })
   if (isExamExpiredLocally()) {
-    showBanner('warning', '网络已恢复但考试已截止', '本机未同步答案不会补交，系统将以服务端最后同步快照自动交卷。', true)
+    showBanner('warning', '网络已恢复，正在确认交卷', '服务器将判断实际截止状态并接管交卷。', true)
+    void submit(false)
     return
   }
   offlineRecoveredMode.value = false
@@ -1855,6 +2004,19 @@ const onPopState = (event) => {
 const bootstrapExam = async () => {
   syncState.userId = auth.userId == null ? null : String(auth.userId)
   syncState.initialized = false
+  if (navigator.onLine) {
+    try {
+      const existingStatus = await submissionStatusApi(examId, { silent: true, timeout: 5000 })
+      if (isSubmissionAccepted(existingStatus)) {
+        endingExam.value = true
+        submissionProgressText.value = '服务器已接管本场考试，正在前往结果中心。'
+        await completeSubmissionUi(existingStatus)
+        return
+      }
+    } catch {
+      // 尚未开考时不存在 Runtime 会话；网络异常时继续使用原有离线恢复流程。
+    }
+  }
   const clientLease = ensureExamClientLease()
   windowGuard = await createExamWindowGuard({
     userId: syncState.userId || 'anonymous',
@@ -1964,7 +2126,8 @@ const bootstrapExam = async () => {
     syncCountdown()
     if (Number.isFinite(secondsLeft.value) && secondsLeft.value <= 0) {
       clearInterval(timer)
-      submit(false)
+      timer = null
+      void submit(false)
     }
   }, 1000)
 
@@ -2008,7 +2171,7 @@ const bootstrapExam = async () => {
 }
 
 watch(answers, () => {
-  if (!syncState.initialized || !state.questions.length) {
+  if (endingExam.value || !syncState.initialized || !state.questions.length) {
     return
   }
   scheduleDraftSave({ dirty: true, updateAnswerTimestamp: true })
@@ -2129,6 +2292,47 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   background: var(--student-bg, #fff9f2);
+}
+
+.submission-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(61, 48, 40, 0.38);
+  backdrop-filter: blur(4px);
+}
+
+.submission-overlay__card {
+  width: min(440px, 100%);
+  padding: 34px 30px;
+  border: 1px solid rgba(201, 106, 61, 0.22);
+  border-radius: 22px;
+  background: #fffdf9;
+  color: var(--student-text, #3d3028);
+  text-align: center;
+  box-shadow: 0 24px 70px rgba(61, 48, 40, 0.2);
+}
+
+.submission-overlay__card h2 {
+  margin: 18px 0 8px;
+}
+
+.submission-overlay__card p {
+  margin: 0;
+  color: var(--student-muted, #786b60);
+  line-height: 1.7;
+}
+
+.submission-overlay__spinner {
+  color: var(--brand, #c96a3d);
+  animation: submission-spin 1s linear infinite;
+}
+
+@keyframes submission-spin {
+  to { transform: rotate(360deg); }
 }
 
 .exam-header {

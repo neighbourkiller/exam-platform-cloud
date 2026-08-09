@@ -13,6 +13,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.ekusys.exam.runtime.messaging.RuntimeOutboxService;
+import com.ekusys.exam.runtime.config.TimeoutSubmissionProperties;
 import com.ekusys.exam.runtime.repository.TimeoutSessionMapper;
 import com.ekusys.exam.runtime.repository.TimeoutSessionRow;
 import java.time.LocalDateTime;
@@ -30,6 +31,8 @@ class TimeoutSubmissionServiceTest {
     private TransactionTemplate transactions;
     private ExamSnapshotService snapshotService;
     private SnapshotPersistenceService snapshotPersistence;
+    private TimeoutSubmissionProperties properties;
+    private TimeoutSubmissionCoordinator coordinator;
     private TimeoutSubmissionService service;
 
     @BeforeEach
@@ -39,8 +42,11 @@ class TimeoutSubmissionServiceTest {
         transactions = mock(TransactionTemplate.class);
         snapshotService = mock(ExamSnapshotService.class);
         snapshotPersistence = mock(SnapshotPersistenceService.class);
+        properties = new TimeoutSubmissionProperties();
+        coordinator = mock(TimeoutSubmissionCoordinator.class);
         service = new TimeoutSubmissionService(
-            mapper, outbox, transactions, snapshotService, snapshotPersistence
+            mapper, outbox, transactions, snapshotService, snapshotPersistence,
+            properties, coordinator
         );
     }
 
@@ -88,5 +94,16 @@ class TimeoutSubmissionServiceTest {
         order.verify(outbox).submissionAccepted(99L);
         order.verify(mapper).markSubmitted(1L);
         order.verify(snapshotService).clearAfterCommit(2L, 3L);
+    }
+
+    @Test
+    void v2IgnoresFixedShardsAndUsesDurableTaskCoordinator() {
+        properties.setEnabled(true);
+        when(coordinator.processDue()).thenReturn(321);
+
+        assertEquals(321, service.processShard(7, 12));
+
+        verify(coordinator).processDue();
+        verify(mapper, never()).findClaimable(anyInt(), anyInt(), anyInt());
     }
 }

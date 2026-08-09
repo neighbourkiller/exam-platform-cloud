@@ -38,14 +38,16 @@ class RuntimeOutboxServiceTest {
         service.submissionAccepted(99L);
 
         ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
+        String expectedEventId = service.submissionAcceptedEventId(99L);
         verify(writer).append(
-            any(String.class), eq("SUBMISSION"), eq("99"), eq("SubmissionAccepted"), event.capture()
+            eq(expectedEventId), eq("SUBMISSION"), eq("99"), eq("SubmissionAccepted"), event.capture()
         );
         Map<String, Object> payload = (Map<String, Object>) event.getValue();
         Map<String, Object> data = (Map<String, Object>) payload.get("data");
         assertThat(payload.get("eventType")).isEqualTo("SubmissionAccepted");
         assertThat(payload.get("producer")).isEqualTo("exam-runtime-service");
         assertThat(payload.get("aggregateId")).isEqualTo("99");
+        assertThat(payload.get("eventId")).isEqualTo(expectedEventId);
         assertThat(data.get("submissionId")).isEqualTo(99L);
         assertThat(data.get("submittedAt")).isEqualTo(submittedAt);
     }
