@@ -7,6 +7,13 @@
         <p>{{ submissionProgressText }}</p>
       </div>
     </div>
+    <div v-else-if="entryPreparing" class="submission-overlay" role="status" aria-live="polite">
+      <div class="submission-overlay__card">
+        <el-icon class="submission-overlay__spinner" :size="34"><Loading /></el-icon>
+        <h2>正在进入考试</h2>
+        <p>{{ entryProgressText }}</p>
+      </div>
+    </div>
     <header class="exam-header">
       <div class="exam-header__meta">
         <p class="exam-header__eyebrow">在线考试</p>
@@ -211,7 +218,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
-import { antiCheatApi, clientHeartbeatApi, healthPingApi, snapshotApi, startExamApi, submissionStatusApi, submitExamApi, uploadAntiCheatEvidenceApi } from '../../api'
+import { activateExamEntryApi, antiCheatApi, clientHeartbeatApi, healthPingApi, paperDeliveryApi, prepareExamEntryApi, snapshotApi, startExamApi, submissionStatusApi, submitExamApi, uploadAntiCheatEvidenceApi } from '../../api'
 import { useAuthStore } from '../../stores/auth'
 import { useCameraProctoring } from '../../composables/useCameraProctoring'
 import {
@@ -232,6 +239,14 @@ import {
 } from '../../utils/examClientLease'
 import { parseDateTime } from '../../utils/datetime'
 import {
+  entryErrorCode,
+  entryRetryAfterMs,
+  fullJitterDelay,
+  isRetryableEntryError,
+  mergePaperDelivery,
+  scheduledEntryDelayMs
+} from '../../utils/examEntryFlow'
+import {
   createSubmissionPlan,
   isSubmissionAccepted,
   shouldRetryDeadlineWithAnswers,
@@ -245,6 +260,8 @@ const examId = String(route.params.id || '')
 const MAX_ANSWER_COUNT = 500
 const MAX_ANSWER_TEXT_LENGTH = 16000
 const MAX_TOTAL_ANSWER_LENGTH = 1000000
+const EXAM_ENTRY_V2_CLIENT_ENABLED = import.meta.env.VITE_EXAM_ENTRY_V2_ENABLED !== 'false'
+const ENTRY_RETRY_TIMEOUT_MS = 30000
 
 const state = reactive({
   examId,
@@ -263,6 +280,8 @@ const hiddenStartedAt = ref(null)
 const offlineStartedAt = ref(null)
 const lastActivityAt = ref(Date.now())
 const endingExam = ref(false)
+const entryPreparing = ref(true)
+const entryProgressText = ref('正在获取候场票据并等待分配的激活时刻。')
 const submissionProgressText = ref('正在将交卷请求交给服务器，请勿重复操作。')
 const allowLeaveExam = ref(false)
 const isOnline = ref(navigator.onLine)
@@ -1672,6 +1691,109 @@ const pollSubmissionStatus = async () => {
   throw lastError || new Error('暂时无法确认交卷状态')
 }
 
+const runEntryRequest = async (request, phase) => {
+  const startedAt = Date.now()
+  let attempt = 0
+  while (true) {
+    try {
+      return await request()
+    } catch (error) {
+      if (!isRetryableEntryError(error)) throw error
+      const elapsed = Date.now() - startedAt
+      if (elapsed >= ENTRY_RETRY_TIMEOUT_MS) throw error
+      const serverDelay = entryRetryAfterMs(error)
+      const delayMs = fullJitterDelay(attempt, serverDelay)
+      if (elapsed + delayMs > ENTRY_RETRY_TIMEOUT_MS) throw error
+      const waitSeconds = Math.max(1, Math.ceil((serverDelay || delayMs) / 1000))
+      entryProgressText.value = phase === 'activate'
+        ? `已进入候场，约 ${waitSeconds} 秒后再次尝试激活。个人计时尚未开始。`
+        : '当前进入人数较多，系统正在自动重试，请勿刷新页面。'
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      attempt += 1
+    }
+  }
+}
+
+const shouldFallbackToLegacyEntry = (error) => {
+  const code = entryErrorCode(error)
+  return code === 'EXAM_ENTRY_V2_DISABLED' || Number(error?.response?.status || 0) === 404
+}
+
+const waitForScheduledActivation = async (prepared) => {
+  const delayMs = scheduledEntryDelayMs(prepared)
+  if (delayMs <= 0) return
+  const readyAt = Date.now() + delayMs
+  while (Date.now() < readyAt) {
+    const remainingMs = readyAt - Date.now()
+    entryProgressText.value = `候场成功，约 ${Math.max(1, Math.ceil(remainingMs / 1000))} 秒后自动激活。个人计时尚未开始。`
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, remainingMs)))
+  }
+}
+
+const handleTerminalEntryState = async (status) => {
+  if (status !== 'SUBMITTING' && status !== 'SUBMITTED') return false
+  endingExam.value = true
+  entryPreparing.value = false
+  submissionProgressText.value = '服务器已接管本场考试，正在确认交卷状态。'
+  const current = await submissionStatusApi(examId, { silent: true, timeout: 5000 })
+  await completeSubmissionUi(current)
+  return true
+}
+
+const enterExamV2 = async (clientLease) => {
+  const clientId = clientLease?.clientId || leaseState.clientId
+  const prepared = await runEntryRequest(
+    () => prepareExamEntryApi(examId, { clientId }, { silent: true, timeout: 10000 }),
+    'prepare'
+  )
+  if (prepared?.status === 'TERMINATED') {
+    const error = new Error('本场考试已终止')
+    error.code = 'EXAM_TERMINATED'
+    throw error
+  }
+  if (prepared?.status === 'SUBMITTED') {
+    await handleTerminalEntryState('SUBMITTED')
+    return null
+  }
+
+  await waitForScheduledActivation(prepared)
+
+  const activated = await runEntryRequest(
+    () => activateExamEntryApi(examId, {
+      clientId,
+      entryToken: prepared.entryToken,
+      leaseToken: clientLease?.leaseToken || leaseState.leaseToken || null
+    }, { silent: true, timeout: 10000 }),
+    'activate'
+  )
+  if (await handleTerminalEntryState(activated?.status)) return null
+  applyLeaseResponse(activated)
+  entryProgressText.value = '会话已激活，正在安全加载试卷。个人计时已开始。'
+  const delivered = await runEntryRequest(
+    () => paperDeliveryApi(examId, {
+      clientId,
+      leaseToken: activated.leaseToken
+    }, { silent: true, timeout: 15000 }),
+    'paper-delivery'
+  )
+  return {
+    examId,
+    examName: delivered?.examName || '',
+    questions: mergePaperDelivery(delivered),
+    proctoringPolicy: delivered?.proctoringPolicy || {},
+    draftUpdatedAt: delivered?.draftUpdatedAt || null,
+    draftVersion: delivered?.draftVersion || 0,
+    startTime: activated?.startTime,
+    endTime: activated?.endTime,
+    deadlineTime: activated?.deadlineTime,
+    resumed: Boolean(activated?.resumed),
+    leaseToken: activated?.leaseToken,
+    leaseExpiresAt: activated?.leaseExpiresAt,
+    heartbeatIntervalSeconds: activated?.heartbeatIntervalSeconds,
+    leaseTimeoutSeconds: activated?.leaseTimeoutSeconds
+  }
+}
+
 const completeSubmissionUi = async (result = {}) => {
   allowLeaveExam.value = true
   stopExamRuntimeTimers()
@@ -2004,19 +2126,6 @@ const onPopState = (event) => {
 const bootstrapExam = async () => {
   syncState.userId = auth.userId == null ? null : String(auth.userId)
   syncState.initialized = false
-  if (navigator.onLine) {
-    try {
-      const existingStatus = await submissionStatusApi(examId, { silent: true, timeout: 5000 })
-      if (isSubmissionAccepted(existingStatus)) {
-        endingExam.value = true
-        submissionProgressText.value = '服务器已接管本场考试，正在前往结果中心。'
-        await completeSubmissionUi(existingStatus)
-        return
-      }
-    } catch {
-      // 尚未开考时不存在 Runtime 会话；网络异常时继续使用原有离线恢复流程。
-    }
-  }
   const clientLease = ensureExamClientLease()
   windowGuard = await createExamWindowGuard({
     userId: syncState.userId || 'anonymous',
@@ -2038,7 +2147,18 @@ const bootstrapExam = async () => {
   const localDraft = syncState.userId ? await loadDraft(syncState.userId, examId) : null
   let data = null
   try {
-    data = await startExamApi(examId, buildClientLeasePayload())
+    if (EXAM_ENTRY_V2_CLIENT_ENABLED) {
+      try {
+        data = await enterExamV2(clientLease)
+        if (!data) return
+      } catch (error) {
+        if (!shouldFallbackToLegacyEntry(error)) throw error
+        entryProgressText.value = '新版入场尚未开启，正在切换兼容入口。'
+        data = await startExamApi(examId, buildClientLeasePayload())
+      }
+    } else {
+      data = await startExamApi(examId, buildClientLeasePayload())
+    }
     applyLeaseResponse(data)
   } catch (error) {
     if (await handleExamClientLeaseError(error)) {
@@ -2067,6 +2187,7 @@ const bootstrapExam = async () => {
     offlineRecoveredMode.value = true
     updateNetworkStatus('OFFLINE')
   }
+  entryPreparing.value = false
   state.examId = String(data?.examId || examId)
   state.examName = data?.examName || ''
   state.questions = Array.isArray(data?.questions) ? data.questions : []

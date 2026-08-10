@@ -35,6 +35,12 @@ export const proctoringTimelineApi = (examId, studentId) => http.get(`/exams/${e
 export const updateProctoringDispositionApi = (examId, studentId, data) =>
   http.put(`/exams/${examId}/proctoring/students/${studentId}/disposition`, data)
 export const startExamApi = (id, data = {}) => http.post(`/exams/${id}/start`, data)
+export const prepareExamEntryApi = (id, data, config = {}) =>
+  http.post(`/exams/${id}/entry/prepare`, data, config)
+export const activateExamEntryApi = (id, data, config = {}) =>
+  http.post(`/exams/${id}/entry/activate`, data, config)
+export const paperDeliveryApi = (id, data, config = {}) =>
+  http.post(`/exams/${id}/paper-delivery`, data, config)
 export const clientHeartbeatApi = (id, data, config = {}) => http.post(`/exams/${id}/client-heartbeat`, data, config)
 export const snapshotApi = (id, data, config = {}) => http.post(`/exams/${id}/snapshot`, data, config)
 export const submitExamApi = (id, data, config = {}) => http.post(`/exams/${id}/submit`, data, config)

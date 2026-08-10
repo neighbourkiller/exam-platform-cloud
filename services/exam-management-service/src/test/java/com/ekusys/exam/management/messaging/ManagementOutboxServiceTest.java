@@ -24,7 +24,7 @@ class ManagementOutboxServiceTest {
 
     @Test
     @SuppressWarnings({"rawtypes", "unchecked"})
-    void examPublishedEventKeepsExistingWireShape() {
+    void examPublishedEventAddsV2RuntimeMetadataWithoutBreakingCandidates() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         OutboxEventWriter writer = mock(OutboxEventWriter.class);
         when(jdbc.query(anyString(), any(RowMapper.class), eq(11L))).thenReturn(List.of());
@@ -48,8 +48,12 @@ class ManagementOutboxServiceTest {
         Map<String, Object> data = (Map<String, Object>) payload.get("data");
         assertThat(payload.get("producer")).isEqualTo("exam-management-service");
         assertThat(payload.get("aggregateId")).isEqualTo("11");
+        assertThat(payload.get("version")).isEqualTo(2);
         assertThat(data.get("examId")).isEqualTo(11L);
         assertThat(data.get("subjectName")).isEqualTo("Java");
+        assertThat(data.get("paperSnapshotId")).isEqualTo(21L);
+        assertThat(data.get("paperSnapshotVersion")).isEqualTo(1L);
+        assertThat(data.get("candidateCount")).isEqualTo(0);
         assertThat(data.get("candidates")).isEqualTo(List.of());
     }
 }

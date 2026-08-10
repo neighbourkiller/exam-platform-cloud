@@ -36,6 +36,16 @@ class ReportingRabbitConfigTest {
     }
 
     @Test
+    void reportingQueueBindsSessionStartedBeforeRuntimePublishesIt() {
+        Binding binding = config.reportingSessionStartedBinding(
+            config.reportingExamEventsExchange(), config.reportingEventsQueue()
+        );
+
+        assertThat(binding.getDestination()).isEqualTo(ReportingRabbitConfig.QUEUE);
+        assertThat(binding.getRoutingKey()).isEqualTo("SessionStarted");
+    }
+
+    @Test
     void reportingConsumerUsesBoundedRetryContainerFactory() throws NoSuchMethodException {
         Method consume = ReportingEventConsumer.class.getMethod("consume", String.class);
         RabbitListener listener = consume.getAnnotation(RabbitListener.class);

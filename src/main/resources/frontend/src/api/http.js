@@ -143,7 +143,7 @@ http.interceptors.response.use(
   async (error) => {
     const status = error?.response?.status
     const originalRequest = error?.config || {}
-    if ((status === 401 || status === 403) && !originalRequest._retry && !isAuthRoute(originalRequest.url)) {
+    if (status === 401 && !originalRequest._retry && !isAuthRoute(originalRequest.url)) {
       originalRequest._retry = true
       try {
         const accessToken = await refreshAccessToken()
@@ -158,7 +158,7 @@ http.interceptors.response.use(
       }
     }
 
-    if (status === 401 || status === 403) {
+    if (status === 401) {
       clearAuthState()
       redirectToLogin()
       ElMessage.error('登录已失效，请重新登录')
@@ -170,6 +170,10 @@ http.interceptors.response.use(
     }
     if (error?.response?.data?.code && !error.code) {
       error.code = error.response.data.code
+    }
+    if (error?.response?.data) {
+      error.responseData = error.response.data
+      error.retryAfterMs = Number(error.response.data?.data?.retryAfterMs || 0) || null
     }
     return Promise.reject(error)
   }

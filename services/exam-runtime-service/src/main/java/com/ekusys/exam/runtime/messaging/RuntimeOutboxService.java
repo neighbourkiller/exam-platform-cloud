@@ -54,15 +54,34 @@ public class RuntimeOutboxService {
         ).toString();
     }
 
-    public void sessionStarted(Long examId, Long studentId) {
+    public void sessionStarted(Long sessionId, Long examId, Long studentId, LocalDateTime eventTime) {
+        String eventId = sessionStartedEventId(sessionId);
         Map<String, Object> data = new LinkedHashMap<>();
+        data.put("sessionId", sessionId);
         data.put("examId", examId);
         data.put("studentId", studentId);
         data.put("eventType", "SESSION_STARTED");
-        data.put("eventTime", LocalDateTime.now());
+        data.put("eventTime", eventTime);
         data.put("durationMs", 0);
         data.put("recordEvent", false);
-        appendProctoringEvent(examId + ":" + studentId, data);
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("eventId", eventId);
+        event.put("eventType", "SessionStarted");
+        event.put("version", 1);
+        event.put("aggregateId", String.valueOf(sessionId));
+        event.put("occurredAt", eventTime);
+        event.put("traceId", null);
+        event.put("producer", "exam-runtime-service");
+        event.put("data", data);
+        writer.append(
+            eventId, "EXAM_SESSION", String.valueOf(sessionId), "SessionStarted", event
+        );
+    }
+
+    public String sessionStartedEventId(Long sessionId) {
+        return UUID.nameUUIDFromBytes(
+            ("SessionStarted:" + sessionId).getBytes(StandardCharsets.UTF_8)
+        ).toString();
     }
 
     public void proctoringEvent(Long eventId) {
@@ -78,11 +97,10 @@ public class RuntimeOutboxService {
                 value.put("recordEvent", true);
                 return value;
             }, eventId);
-        appendProctoringEvent(String.valueOf(eventId), data);
+        appendProctoringEvent(UUID.randomUUID().toString(), String.valueOf(eventId), data);
     }
 
-    private void appendProctoringEvent(String aggregateId, Map<String, Object> data) {
-        String eventId = UUID.randomUUID().toString();
+    private void appendProctoringEvent(String eventId, String aggregateId, Map<String, Object> data) {
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("eventId", eventId);
         event.put("eventType", "ProctoringEventRecorded");

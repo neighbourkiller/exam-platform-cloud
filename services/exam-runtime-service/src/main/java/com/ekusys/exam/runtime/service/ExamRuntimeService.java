@@ -142,7 +142,7 @@ public class ExamRuntimeService {
                         """,
                     IdWorker.getId(), examId, userId, admission.paper().snapshotId()
                 );
-                outbox.sessionStarted(examId, userId);
+                outbox.sessionStarted(sessionId, examId, userId, now);
                 session = new SessionRow(sessionId, now, deadline, "ANSWERING");
                 clientLeaseService.activateAfterCommit(
                     examId, userId, sessionId, deadline, clientId(request), lease, now

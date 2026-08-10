@@ -35,6 +35,10 @@
         </dependency>
         <dependency>
             <groupId>com.ekusys</groupId>
+            <artifactId>exam-content-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.ekusys</groupId>
             <artifactId>exam-iam-api</artifactId>
         </dependency>
         <dependency>
@@ -98,6 +102,10 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

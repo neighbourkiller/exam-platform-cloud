@@ -9,6 +9,11 @@ spring:
       connection-timeout: ${APP_RUNTIME_DB_CONNECTION_TIMEOUT_MS:2000}
   data: { redis: { host: "${REDIS_HOST:redis}", port: 6379, database: 1 } }
   flyway: { enabled: true, locations: "classpath:db/migration" }
+server:
+  compression:
+    enabled: true
+    min-response-size: 1KB
+    mime-types: application/json,application/problem+json,text/plain
 management:
   endpoints:
     web:
@@ -18,9 +23,31 @@ management:
     distribution:
       percentiles-histogram:
         exam.timeout.submission.completion.latency: true
+        exam.entry.request.duration: true
+        exam.entry.activation.transaction.duration: true
+        exam.paper.cache.load.duration: true
       slo:
         exam.timeout.submission.completion.latency: 1s,2s,5s,10s,15s,20s,30s,45s,60s
 app:
+  exam-entry:
+    enabled: ${APP_EXAM_ENTRY_V2_ENABLED:false}
+    waiting-room-minutes: ${APP_EXAM_ENTRY_WAITING_ROOM_MINUTES:10}
+    slot-count: ${APP_EXAM_ENTRY_SLOT_COUNT:10}
+    ticket-retention-minutes: ${APP_EXAM_ENTRY_TICKET_RETENTION_MINUTES:10}
+    provisioning-batch-size: ${APP_EXAM_ENTRY_PROVISIONING_BATCH_SIZE:500}
+    l1-maximum-megabytes: ${APP_EXAM_ENTRY_L1_MAXIMUM_MEGABYTES:256}
+    l1-expire-after-access-minutes: ${APP_EXAM_ENTRY_L1_EXPIRE_MINUTES:120}
+    l2-ttl-hours: ${APP_EXAM_ENTRY_L2_TTL_HOURS:48}
+    cache-load-wait-ms: ${APP_EXAM_ENTRY_CACHE_LOAD_WAIT_MS:5000}
+    cache-warm-interval-ms: ${APP_EXAM_ENTRY_CACHE_WARM_INTERVAL_MS:60000}
+    metrics-refresh-interval-ms: ${APP_EXAM_ENTRY_METRICS_REFRESH_INTERVAL_MS:10000}
+  rabbitmq:
+    runtime-lifecycle:
+      retry:
+        max-attempts: ${APP_RUNTIME_LIFECYCLE_RETRY_MAX_ATTEMPTS:3}
+        initial-interval-ms: ${APP_RUNTIME_LIFECYCLE_RETRY_INITIAL_MS:1000}
+        multiplier: ${APP_RUNTIME_LIFECYCLE_RETRY_MULTIPLIER:2.0}
+        max-interval-ms: ${APP_RUNTIME_LIFECYCLE_RETRY_MAX_MS:10000}
   timeout-submission:
     enabled: ${APP_TIMEOUT_SUBMISSION_V2_ENABLED:false}
     batch-size: ${APP_TIMEOUT_SUBMISSION_BATCH_SIZE:200}

@@ -235,6 +235,28 @@ public class ExamClientLeaseService {
     }
 
     /**
+     * 在 MySQL 激活事务已提交后严格写入 Redis 租约。
+     * Redis 不可用时保留数据库会话并返回可重试错误，调用方可使用同一数据库令牌重试。
+     */
+    public ExamClientLeaseView activateCommitted(Long examId, Long studentId, Long sessionId,
+                                                 LocalDateTime deadline, String clientId,
+                                                 String leaseToken, LocalDateTime now) {
+        validateClientId(clientId);
+        validateToken(leaseToken);
+        long ttlMillis = ttlMillis(deadline, now);
+        try {
+            if (!activate(examId, studentId, sessionId, deadline, clientId, leaseToken, now, false)) {
+                throw conflict();
+            }
+        } catch (DataAccessException exception) {
+            log.warn("Redis client lease activation failed after database commit: examId={}, studentId={}",
+                examId, studentId, exception);
+            throw new BusinessException(UNAVAILABLE_CODE, "考试窗口校验服务暂时不可用，请稍后重试");
+        }
+        return newLease(leaseToken, now, ttlMillis);
+    }
+
+    /**
      * 获取（或恢复）客户端租约。
      * <p>此方法处理两种场景：</p>
      *

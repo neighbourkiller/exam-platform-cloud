@@ -6,6 +6,12 @@ import com.ekusys.exam.exam.dto.AntiCheatEventRequest;
 import com.ekusys.exam.exam.dto.AntiCheatEvidenceUploadView;
 import com.ekusys.exam.exam.dto.ExamClientLeaseRequest;
 import com.ekusys.exam.exam.dto.ExamClientLeaseView;
+import com.ekusys.exam.exam.dto.EntryActivateRequest;
+import com.ekusys.exam.exam.dto.EntryActivateView;
+import com.ekusys.exam.exam.dto.EntryPrepareRequest;
+import com.ekusys.exam.exam.dto.EntryPrepareView;
+import com.ekusys.exam.exam.dto.PaperDeliveryRequest;
+import com.ekusys.exam.exam.dto.PaperDeliveryView;
 import com.ekusys.exam.exam.dto.ProctoringDispositionRequest;
 import com.ekusys.exam.exam.dto.ProctoringDispositionView;
 import com.ekusys.exam.exam.dto.ProctoringOverviewView;
@@ -22,6 +28,7 @@ import com.ekusys.exam.exam.dto.SubmissionStatusView;
 import com.ekusys.exam.runtime.service.AntiCheatEvidenceService;
 import com.ekusys.exam.runtime.service.ExamRuntimeService;
 import com.ekusys.exam.runtime.service.ProctoringService;
+import com.ekusys.exam.runtime.entry.ExamEntryService;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.http.MediaType;
@@ -40,12 +47,15 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping("/api/v1/exams")
 public class RuntimeExamController {
     private final ExamRuntimeService runtime;
+    private final ExamEntryService entry;
     private final ProctoringService proctoring;
     private final AntiCheatEvidenceService evidence;
 
-    public RuntimeExamController(ExamRuntimeService runtime, ProctoringService proctoring,
+    public RuntimeExamController(ExamRuntimeService runtime, ExamEntryService entry,
+                                 ProctoringService proctoring,
                                  AntiCheatEvidenceService evidence) {
         this.runtime = runtime;
+        this.entry = entry;
         this.proctoring = proctoring;
         this.evidence = evidence;
     }
@@ -58,7 +68,30 @@ public class RuntimeExamController {
     @PreAuthorize("hasRole('STUDENT')")
     public ApiResponse<StartExamResponse> start(@PathVariable Long id,
                                                 @RequestBody(required = false) StartExamRequest request) {
-        return ApiResponse.ok(runtime.start(id, request));
+        return ApiResponse.ok(entry.hasLocalProjection(id)
+            ? entry.legacyStart(id, request)
+            : runtime.start(id, request));
+    }
+
+    @PostMapping("/{id}/entry/prepare")
+    @PreAuthorize("hasRole('STUDENT')")
+    public ApiResponse<EntryPrepareView> prepare(@PathVariable Long id,
+                                                 @Valid @RequestBody EntryPrepareRequest request) {
+        return ApiResponse.ok(entry.prepare(id, request));
+    }
+
+    @PostMapping("/{id}/entry/activate")
+    @PreAuthorize("hasRole('STUDENT')")
+    public ApiResponse<EntryActivateView> activate(@PathVariable Long id,
+                                                   @Valid @RequestBody EntryActivateRequest request) {
+        return ApiResponse.ok(entry.activate(id, request));
+    }
+
+    @PostMapping("/{id}/paper-delivery")
+    @PreAuthorize("hasRole('STUDENT')")
+    public ApiResponse<PaperDeliveryView> paperDelivery(@PathVariable Long id,
+                                                        @Valid @RequestBody PaperDeliveryRequest request) {
+        return ApiResponse.ok(entry.paperDelivery(id, request));
     }
 
     @PostMapping("/{id}/client-heartbeat")

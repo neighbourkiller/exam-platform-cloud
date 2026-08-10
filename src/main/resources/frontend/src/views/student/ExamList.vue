@@ -214,6 +214,8 @@ const canEnter = (exam) => {
   if (disallowedStatuses.has(exam.status)) return false
   const endTime = parseDateTime(exam.endTime)
   if (endTime && endTime.getTime() <= Date.now()) return false
+  const startTime = parseDateTime(exam.startTime)
+  if (startTime && startTime.getTime() - (10 * 60 * 1000) > Date.now()) return false
   return true
 }
 

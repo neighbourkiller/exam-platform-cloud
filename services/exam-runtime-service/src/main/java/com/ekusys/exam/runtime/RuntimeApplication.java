@@ -1,6 +1,7 @@
 package com.ekusys.exam.runtime;
 
 import com.ekusys.exam.runtime.config.ClientLeaseProperties;
+import com.ekusys.exam.runtime.config.ExamEntryProperties;
 import com.ekusys.exam.runtime.config.SnapshotProperties;
 import com.ekusys.exam.runtime.config.TimeoutSubmissionProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -15,7 +16,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableConfigurationProperties({
     SnapshotProperties.class,
     ClientLeaseProperties.class,
-    TimeoutSubmissionProperties.class
+    TimeoutSubmissionProperties.class,
+    ExamEntryProperties.class
 })
 @MapperScan("com.ekusys.exam.runtime.repository")
 @SpringBootApplication(scanBasePackages = "com.ekusys.exam")

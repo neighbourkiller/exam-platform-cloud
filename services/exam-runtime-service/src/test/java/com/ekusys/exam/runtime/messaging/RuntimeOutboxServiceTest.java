@@ -19,6 +19,31 @@ import org.springframework.jdbc.core.RowMapper;
 class RuntimeOutboxServiceTest {
 
     @Test
+    @SuppressWarnings("unchecked")
+    void sessionStartedUsesDeterministicEventIdPerSession() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        OutboxEventWriter writer = mock(OutboxEventWriter.class);
+        RuntimeOutboxService service = new RuntimeOutboxService(jdbc, writer);
+        LocalDateTime eventTime = LocalDateTime.of(2026, 8, 9, 10, 0);
+
+        service.sessionStarted(1_001L, 11L, 101L, eventTime);
+
+        String eventId = service.sessionStartedEventId(1_001L);
+        ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
+        verify(writer).append(
+            eq(eventId), eq("EXAM_SESSION"), eq("1001"),
+            eq("SessionStarted"), event.capture()
+        );
+        Map<String, Object> payload = (Map<String, Object>) event.getValue();
+        Map<String, Object> data = (Map<String, Object>) payload.get("data");
+        assertThat(payload.get("eventId")).isEqualTo(eventId);
+        assertThat(payload.get("eventType")).isEqualTo("SessionStarted");
+        assertThat(data.get("sessionId")).isEqualTo(1_001L);
+        assertThat(data.get("eventTime")).isEqualTo(eventTime);
+        assertThat(data.get("recordEvent")).isEqualTo(false);
+    }
+
+    @Test
     @SuppressWarnings({"rawtypes", "unchecked"})
     void submissionEventKeepsExistingWireShape() throws Exception {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);

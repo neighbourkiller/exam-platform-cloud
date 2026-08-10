@@ -81,6 +81,14 @@ public class ReportingRabbitConfig {
     }
 
     @Bean
+    Binding reportingSessionStartedBinding(TopicExchange reportingExamEventsExchange,
+                                           Queue reportingEventsQueue) {
+        return BindingBuilder.bind(reportingEventsQueue)
+            .to(reportingExamEventsExchange)
+            .with("SessionStarted");
+    }
+
+    @Bean
     Binding reportingAuditBinding(TopicExchange reportingExamEventsExchange, Queue reportingEventsQueue) {
         return BindingBuilder.bind(reportingEventsQueue).to(reportingExamEventsExchange).with("AuditOperationRecorded");
     }

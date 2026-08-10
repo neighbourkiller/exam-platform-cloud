@@ -69,10 +69,17 @@ services:
     depends_on: { mysql: { condition: service_healthy } }
   gateway:
     build: { context: ., args: { JAR_FILE: services/exam-gateway/target/exam-gateway-1.0.0-SNAPSHOT.jar } }
-    environment: { NACOS_SERVER_ADDR: "nacos:8848", NACOS_NAMESPACE: dev, NACOS_USERNAME: "${NACOS_USERNAME:-nacos}", NACOS_PASSWORD: "${NACOS_PASSWORD:?NACOS_PASSWORD is required}", JWT_PUBLIC_KEY_LOCATION: "/run/secrets/jwt_public_key", TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}" }
+    environment:
+      NACOS_SERVER_ADDR: "nacos:8848"
+      NACOS_NAMESPACE: dev
+      NACOS_USERNAME: "${NACOS_USERNAME:-nacos}"
+      NACOS_PASSWORD: "${NACOS_PASSWORD:?NACOS_PASSWORD is required}"
+      JWT_PUBLIC_KEY_LOCATION: "/run/secrets/jwt_public_key"
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
+      REDIS_HOST: redis
     secrets: [jwt_public_key]
     ports: ["16730:16730"]
-    depends_on: [nacos]
+    depends_on: { redis: { condition: service_healthy }, nacos: { condition: service_started } }
   iam-service:
     build: { context: ., args: { JAR_FILE: services/exam-iam-service/target/exam-iam-service-1.0.0-SNAPSHOT.jar } }
     secrets: [jwt_private_key, jwt_public_key]
@@ -108,8 +115,11 @@ services:
       SERVICE_CLIENT_ID: exam-runtime-service
       DB_USERNAME: exam_runtime
       DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+      APP_EXAM_ENTRY_V2_ENABLED: "${APP_EXAM_ENTRY_V2_ENABLED:-false}"
     secrets: [jwt_public_key]
     depends_on: { mysql: { condition: service_healthy }, redis: { condition: service_healthy }, nacos: { condition: service_started }, xxl-job-admin: { condition: service_started } }
+    deploy:
+      replicas: ${APP_RUNTIME_REPLICAS:-4}
   grading-service:
     build: { context: ., args: { JAR_FILE: services/exam-grading-service/target/exam-grading-service-1.0.0-SNAPSHOT.jar } }
     environment: { <<: *service-env, SERVICE_CLIENT_ID: exam-grading-service, DB_USERNAME: exam_grading, DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}" }

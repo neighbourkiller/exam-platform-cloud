@@ -44,20 +44,25 @@ public class ManagementOutboxService {
         data.put("passScore", exam.getPassScore());
         data.put("status", exam.getStatus());
         data.put("publisherId", exam.getPublisherId());
+        data.put("paperSnapshotId", paper.snapshotId());
+        data.put("paperSnapshotVersion", paper.version());
+        data.put("proctoringLevel", exam.getProctoringLevel());
+        data.put("proctoringConfigJson", exam.getProctoringConfigJson());
+        data.put("candidateCount", candidates.size());
         data.put("candidates", candidates);
-        append("ExamPublished", String.valueOf(exam.getId()), data);
+        append("ExamPublished", String.valueOf(exam.getId()), 2, data);
     }
 
     public void examTerminated(Exam exam) {
-        append("ExamTerminated", String.valueOf(exam.getId()), Map.of("examId", exam.getId()));
+        append("ExamTerminated", String.valueOf(exam.getId()), 1, Map.of("examId", exam.getId()));
     }
 
-    private void append(String eventType, String aggregateId, Map<String, Object> data) {
+    private void append(String eventType, String aggregateId, int version, Map<String, Object> data) {
         String eventId = UUID.randomUUID().toString();
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("eventId", eventId);
         event.put("eventType", eventType);
-        event.put("version", 1);
+        event.put("version", version);
         event.put("aggregateId", aggregateId);
         event.put("occurredAt", LocalDateTime.now());
         event.put("traceId", null);

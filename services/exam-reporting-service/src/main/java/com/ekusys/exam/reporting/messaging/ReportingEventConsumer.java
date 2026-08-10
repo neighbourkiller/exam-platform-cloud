@@ -44,6 +44,7 @@ public class ReportingEventConsumer {
                 requiredLong(data, "examId")
             );
             case "SubmissionAccepted" -> projectSubmission(data);
+            case "SessionStarted" -> projectProctoring(data);
             case "ProctoringEventRecorded" -> projectProctoring(data);
             case "GradeCompleted" -> projectGrade(data);
             case "AuditOperationRecorded" -> projectAudit(data);
