@@ -28,12 +28,18 @@ WHERE s.status IN ('ANSWERING', 'AUTO_SUBMITTING')
   AND t.id IS NULL;
 ```
 
-5. 在 Nacos 发布 `deploy/nacos-config/exam-runtime-service.yml`。将 Runtime 实际读取的
-   `app.timeout-submission.enabled` 切换为 `true`；如果使用环境变量占位符，则先把
-   `APP_TIMEOUT_SUBMISSION_V2_ENABLED=true` 注入两个 Runtime 容器并滚动重启。线程池和
-   Hikari 参数在 Bean/连接池初始化时生效，因此调整这些参数后必须滚动重启，不能只依赖
-   动态刷新。逐实例通过受控的容器配置检查或启动日志确认最终有效值，禁止暴露
-   `/actuator/env`，也禁止打印密钥类环境变量。
+5. 在 `.env.microservices` 设置 `APP_TIMEOUT_SUBMISSION_V2_ENABLED=true`。如果同时修改
+   `deploy/nacos-config/exam-runtime-service.yml`，先通过唯一 Compose 入口强制重建
+   `nacos-config-init`，再重建全部 Runtime 容器。线程池和 Hikari 参数在 Bean/连接池
+   初始化时生效，因此调整这些参数后必须滚动重启，不能只依赖动态刷新。逐实例通过受控的
+   容器配置检查或启动日志确认最终有效值，禁止暴露 `/actuator/env`，也禁止打印密钥类环境变量。
+
+```bash
+docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.microservices \
+  up --no-deps --force-recreate nacos-config-init
+docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.microservices \
+  up -d --force-recreate runtime-service
+```
 6. 将现有 XXL-JOB 的 CRON 更新为 `0/2 * * * * ?`，保留
    `SHARDING_BROADCAST`、`SERIAL_EXECUTION` 和 `DO_NOTHING`，然后重新启用。
 7. 观察积压、最老逾期、失败数、数据库连接池等待和 Outbox 积压。

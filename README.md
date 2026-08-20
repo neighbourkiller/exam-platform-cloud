@@ -78,62 +78,59 @@ exam/
 
 ### Prerequisites
 
-- **Java 21** (JDK)
-- **Node.js 18+** and npm
 - **Docker** and **Docker Compose**
+- **Java 21** only for local backend debugging
+- **Node.js 18+** and npm only for local frontend debugging
 
-### 1. Generate JWT Key Pairs
+### 1. Prepare Deployment Variables
 
-The authentication service uses asymmetric RS256 JWT tokens. You must generate public/private key pairs before starting the docker services:
+Copy `.env.microservices.example` to `.env.microservices`, fill every required value, and
+never commit real credentials. `NACOS_AUTH_TOKEN` must decode to at least 32 bytes and
+`APP_DEFAULT_PASSWORD_HASH` must be the Spring Security BCrypt hash (including the
+`{bcrypt}` prefix) for `APP_DEFAULT_PASSWORD`.
 
-On Windows (PowerShell):
-```powershell
-./deploy/generate-dev-secrets.ps1
-```
-
-This generates keys under `deploy/secrets/` which will be mounted to containers via Docker Secrets.
-
-### 2. Start Services via Docker Compose
-
-Run the following command in the project root directory:
+### 2. Deploy through the Only Compose Entry Point
 
 ```bash
-docker compose up -d
+docker compose -p exam-platform-cloud -f docker-compose.yml \
+  --env-file .env.microservices up -d --build
 ```
 
+The example wrapper `bash deploy/docker-deploy-example.sh` only invokes this Compose file.
+The multi-stage Docker build packages the Maven services, while Compose-managed one-shot
+services generate JWT keys, publish Nacos configuration, and load demo data.
+The example wrapper deploys four Runtime instances and one instance of every other gateway
+or business module. All application and middleware containers join the Docker network named
+`exam-cloud`; direct Compose usage can still override the Runtime count through
+`APP_RUNTIME_REPLICAS`.
+
 This starts all infrastructure services and backend microservices:
-- **MySQL 8.4** (`:13306`)
-- **Redis 7.4** (`:16379`)
-- **RabbitMQ 4.1** (`:15673` AMQP, `:15672` Management)
-- **MinIO** (`:19000` API, `:19001` Console)
-- **Nacos 3.1.1** (`:8848` Console)
+- **MySQL 8.4** (`:23306`)
+- **Redis 7.4** (`:26379`)
+- **RabbitMQ 4.1** (`:15672` AMQP, `:25672` Management)
+- **MinIO** (`:29000` API, `:29001` Console)
+- **Nacos 3.1.1** (`:18081` Console, `:18848` registry/config API)
 - **XXL-Job Admin 3.4.0** (`:18080` Admin console)
 - **Gateway & Microservices** (Gateway listening on `:16730`)
 
 > [!IMPORTANT]
-> MySQL initialization scripts in `deploy/mysql/init` will automatically create the required databases (`exam_iam`, `exam_academic`, `exam_content`, `exam_management`, `exam_runtime`, `exam_grading`, `exam_reporting`, `nacos_config`, `xxl_job`) and seed Nacoses configs.
+> MySQL initialization files in `deploy/mysql/init` create the required schemas and
+> middleware users. The `nacos-config-init`, `jwt-key-init`, and `app-data-init` one-shot
+> services are part of `docker-compose.yml`; no host-side preparation, publication, or seed
+> script is required.
 
-### 3. Initialize Nacos Configurations
-
-To push local configuration profiles to Nacos:
-
-On Windows (PowerShell):
-```powershell
-./deploy/publish-nacos.ps1
-```
-
-### 4. Build and Run Backend Services (Optional for Local Debugging)
+### 3. Build and Run Backend Services (Optional for Local Debugging)
 
 If you wish to run/debug specific services locally instead of in Docker:
 
-1. Stop the target Docker container (e.g. `docker compose stop iam-service`).
+1. Stop the target container through `docker-compose.yml`.
 2. Build the project:
    ```bash
    ./mvnw clean package -DskipTests
    ```
 3. Run the microservice using your IDE or command line targeting the appropriate service directory.
 
-### 5. Run the Frontend
+### 4. Run the Frontend
 
 ```bash
 cd src/main/resources/frontend
@@ -143,13 +140,13 @@ npm run dev
 
 The dev server will be available at **http://localhost:5173**, proxying API requests to the gateway at **http://localhost:16730**.
 
-### 6. Default Accounts
+### 5. Default Accounts
 
 | Account | Password | Role |
 |---------|----------|------|
-| `admin` | `123456` | Administrator |
-| `teacher1` | `123456` | Teacher |
-| `student1` | `123456` | Student |
+| `admin` | `APP_DEFAULT_PASSWORD` | Administrator |
+| `teacher01` | `APP_DEFAULT_PASSWORD` | Teacher |
+| `20010001` to `20010003` | `APP_DEFAULT_PASSWORD` | Student |
 
 ---
 
@@ -161,15 +158,17 @@ When the system is running, Swagger UI / OpenAPI documentation is aggregated and
 
 ## Environment Variables
 
-Microservices retrieve configurations from Nacos. Key bootstrap variables can be configured in `.env`:
+Microservices retrieve configurations from Nacos. Key bootstrap variables are supplied through `.env.microservices`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MYSQL_ROOT_PASSWORD` | - | Root password for MySQL container |
 | `EXAM_DB_PASSWORD` | - | Database password for all exam services |
-| `NACOS_PASSWORD` | `nacos` | Nacos console password |
+| `NACOS_PASSWORD` | - | Nacos console password |
 | `RABBITMQ_PASSWORD` | - | RabbitMQ connection password |
 | `MINIO_ACCESS_KEY` | - | MinIO console access key |
 | `MINIO_SECRET_KEY` | - | MinIO console secret key |
 | `SERVICE_CLIENT_SECRET` | - | Internal Feign client security token |
 | `XXL_JOB_ACCESS_TOKEN` | - | Access token for XXL-Job executor authentication |
+| `APP_DEFAULT_PASSWORD` | - | Demo-account and new-user default password |
+| `APP_DEFAULT_PASSWORD_HASH` | - | Matching Spring Security BCrypt hash for seed data |

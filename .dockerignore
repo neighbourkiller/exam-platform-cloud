@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+.vscode
+.codex
+.agents
+.claude
+**/target
+**/node_modules
+src/main/resources/frontend/dist
+.env
+.env.*
+deploy/secrets
+documents
+docs
+*.log

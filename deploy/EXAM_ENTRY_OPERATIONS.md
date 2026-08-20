@@ -22,7 +22,13 @@ POST /internal/v1/exam-provisioning/{examId}/reconcile
    每实例 Hikari 最大连接数保持 24。完成万人压测后再开启
    `APP_EXAM_ENTRY_V2_ENABLED=true`。
 
-Nacos 源文件修改后必须运行仓库现有发布脚本，不能把仓库文件视为已发布配置。
+Nacos 源文件修改后必须通过唯一 Compose 入口强制重建配置发布服务，不能把仓库文件
+视为已发布配置：
+
+```bash
+docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.microservices \
+  up --no-deps --force-recreate nacos-config-init
+```
 
 ## 核对 SQL
 

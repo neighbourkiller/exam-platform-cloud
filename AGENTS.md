@@ -19,7 +19,7 @@ EkuExam Cloud 是面向管理员、教师和学生的在线考试平台。当前
 - 前端：Vue、Vite、Element Plus、Pinia、Axios、ECharts。
 - 测试：JUnit、Mockito、Testcontainers。
 
-具体版本以聚合 `pom.xml`、前端 `package.json` 和 `compose.yaml` 为准。
+具体版本以聚合 `pom.xml`、前端 `package.json` 和 `docker-compose.yml` 为准。
 
 ### 目录路由
 
@@ -50,7 +50,7 @@ EkuExam Cloud 是面向管理员、教师和学生的在线考试平台。当前
 - Schema 变更必须在所属服务新增版本化 Flyway 脚本；禁止修改已发布迁移或用手工改库替代迁移。
 - 业务数据和 `outbox_event` 应在同一事务写入；消费者使用 `inbox_event` 或等价约束去重。可靠性语义是“至少一次投递 + 幂等消费”，不得声称绝对不重复或绝对不丢失。
 - 变更公共事件、共享队列、死信交换机、重试参数或 Outbox 状态机时，必须定位全部生产者、消费者和拓扑声明方，并评估兼容性与发布顺序。
-- `compose.yaml` 是当前微服务栈的标准入口；`docker-compose.yml` 是历史文件，不得混用。
+- `docker-compose.yml` 是唯一 Compose 入口，负责中间件、初始化配置、初始数据与微服务容器编排；禁止新增第二个 Compose 部署入口。
 - 涉及 Outbox 上线、重放或清理时，先阅读 [`deploy/OUTBOX_OPERATIONS.md`](deploy/OUTBOX_OPERATIONS.md)；涉及快照积压或失败时，先阅读 [`deploy/SNAPSHOT_FLUSH_OPERATIONS.md`](deploy/SNAPSHOT_FLUSH_OPERATIONS.md)。
 
 ## 构建与验证
@@ -81,7 +81,7 @@ npm run build
 
 ## 安全与机密
 
-- `.env.microservices`、`deploy/secrets/`、密码、JWT 私钥、服务间密钥和容器环境变量不得提交、打印、复制到文档或出现在截图中。
+- `.env.microservices`、密码、JWT 私钥、服务间密钥和容器环境变量不得提交、打印、复制到文档或出现在截图中；Compose 生成的 JWT 密钥只保存在命名数据卷中。
 - 不在源码、测试数据、日志或错误信息中硬编码或泄露机密。
 - 修改 Nacos、Compose 或部署配置时遵守 [`deploy/AGENTS.md`](deploy/AGENTS.md)，并区分仓库配置、已发布配置和运行时状态。
 

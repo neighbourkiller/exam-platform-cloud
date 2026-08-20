@@ -43,9 +43,9 @@ AOF 与 RDB 覆盖共享 Redis 实例的全部逻辑数据库。Redis 为便于 
 不能改成面向局域网或公网的无认证监听。
 
 ```bash
-docker compose -p exam-platform-cloud -f compose.yaml --env-file .env.microservices \
+docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.microservices \
   exec -T redis redis-cli CONFIG GET appendonly appendfsync save maxmemory-policy
-docker compose -p exam-platform-cloud -f compose.yaml --env-file .env.microservices \
+docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.microservices \
   exec -T redis redis-cli INFO persistence
 ```
 
@@ -72,9 +72,9 @@ AOF manifest 或旧版 `appendonly.aof` 时，入口脚本会先用仅开放 Uni
 标准命令重建 Redis；不要绕过入口脚本直接运行 `redis-server`：
 
 ```bash
-docker compose -p exam-platform-cloud -f compose.yaml --env-file .env.microservices \
+docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.microservices \
   up -d redis
-docker compose -p exam-platform-cloud -f compose.yaml --env-file .env.microservices \
+docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.microservices \
   logs redis
 ```
 

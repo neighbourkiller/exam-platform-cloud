@@ -78,37 +78,45 @@ exam/
 
 ### 环境要求
 
-- **Java 21** (JDK)
-- **Node.js 18+** 和 npm
 - **Docker** 与 **Docker Compose**
+- 本地调试前端时另需 **Node.js 18+** 和 npm
+- 本地调试后端时另需 **Java 21**
 
-### 1. WSL Ubuntu 一键启动
+### 1. 准备部署环境变量
 
-在 WSL Ubuntu 中执行：
-
-```bash
-bash deploy/start-local.sh
-```
-
-脚本会自动生成未纳入 Git 的 `.env.microservices`、JWT Docker Secrets，构建全部微服务 JAR，先启动基础设施服务，发布 Nacos 配置，最后启动网关和业务服务。首次启动还会初始化演示账号：管理员 `admin`、教师 `teacher01`、学生 `20010001` 至 `20010003`；密码均为 `.env.microservices` 中的 `APP_DEFAULT_PASSWORD`。
-
-首次启动需要 Docker Desktop 已开启 **WSL Integration**，且 WSL 中具备 `docker`、`openssl`、`python3` 与 `python3-bcrypt`。缺少 BCrypt 模块时执行：
+复制环境变量模板并填写全部必填项，真实密码和密钥不得提交：
 
 ```bash
-sudo apt install python3-bcrypt
+cp .env.microservices.example .env.microservices
 ```
 
-### 2. 使用 Docker Compose 手动启动
+`NACOS_AUTH_TOKEN` 必须是 Base64 编码且解码后不少于 32 字节；
+`APP_DEFAULT_PASSWORD_HASH` 必须是 `APP_DEFAULT_PASSWORD` 对应的、带
+`{bcrypt}` 前缀的 Spring Security BCrypt 哈希。
 
-如需手动控制各阶段，先生成环境配置并构建：
+### 2. 使用唯一 Compose 入口部署
 
 ```bash
-bash deploy/prepare-local-deployment.sh
-bash mvnw -B clean package -DskipTests
-docker compose -f compose.yaml --env-file .env.microservices up -d mysql redis rabbitmq minio nacos xxl-job-admin
-bash deploy/publish-nacos.sh
-docker compose -f compose.yaml --env-file .env.microservices up -d --build
+docker compose \
+  -p exam-platform-cloud \
+  -f docker-compose.yml \
+  --env-file .env.microservices \
+  up -d --build
 ```
+
+也可以运行只调用上述命令的示例脚本：
+
+```bash
+bash deploy/docker-deploy-example.sh
+```
+
+该示例脚本固定部署 4 个 Runtime 实例，网关和其他业务模块各部署 1 个容器实例，
+并将全部模块与中间件接入名为 `exam-cloud` 的 Docker 网络。直接执行 Compose 命令时，
+Runtime 实例数仍可通过 `APP_RUNTIME_REPLICAS` 调整。
+
+`docker-compose.yml` 是唯一部署入口。Docker 会在多阶段镜像构建中完成 Maven
+打包，并由 Compose 一次性服务生成 JWT 密钥、发布 Nacos 配置以及导入演示账号、
+5 门课程和 100 道初始题目；宿主机不再运行准备、发布或种子数据脚本。
 
 该命令将启动所有基础设施和后端微服务：
 - **MySQL 8.4** (`:23306`)
@@ -120,29 +128,33 @@ docker compose -f compose.yaml --env-file .env.microservices up -d --build
 - **微服务及网关** (网关统一监听 `:16730` 端口)
 
 > [!IMPORTANT]
-> MySQL 容器启动时会自动执行 `deploy/mysql/init` 目录下的 SQL 脚本，自动创建微服务所需的各个数据库（`exam_iam`, `exam_academic`, `exam_content`, `exam_management`, `exam_runtime`, `exam_grading`, `exam_reporting`, `nacos_config`, `xxl_job`）。Nacos 业务配置由 `deploy/publish-nacos.sh` 发布。
-> 微服务栈使用独立的 Docker 数据卷和本机端口，因此可与旧单体项目的 `13306`、`16379`、`19000` 端口并存。
+> MySQL 容器会执行 `deploy/mysql/init`，创建各微服务 Schema、Nacos 与 XXL-Job
+> 表和专用账号。`nacos-config-init` 通过 Nacos API 发布 `deploy/nacos-config/`，
+> `app-data-init` 在业务 Flyway 完成后导入 `deploy/seed-data/`。这些一次性服务都由
+> `docker-compose.yml` 管理。已有 MySQL 数据卷不会重新执行
+> `/docker-entrypoint-initdb.d`；需要修改已有环境时必须遵循迁移和运维文档，不能删除
+> 数据卷冒充升级。
 
-### 3. 初始化 Nacos 配置
-
-一键脚本已自动完成。仅在更新 `deploy/nacos-config/` 后需手动重新发布：
+更新 Nacos 源配置后，用同一 Compose 入口强制重建发布服务：
 
 ```bash
-bash deploy/publish-nacos.sh
+docker compose -p exam-platform-cloud -f docker-compose.yml \
+  --env-file .env.microservices up --no-deps --force-recreate nacos-config-init
 ```
 
-### 4. 编译与本地调试（可选）
+### 3. 编译与本地调试（可选）
 
 如果您希望在本地开发环境调试特定微服务，而不是全部运行在 Docker 中：
 
-1. 停止对应的 Docker 容器（例如 `docker compose stop iam-service`）。
+1. 使用唯一 Compose 文件停止对应容器，例如：
+   `docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.microservices stop iam-service`。
 2. 构建整个 Maven 项目：
    ```bash
    ./mvnw clean package -DskipTests
    ```
 3. 在 IDE 中导入项目，启动对应的微服务应用启动类。
 
-### 5. 启动前端
+### 4. 启动前端
 
 ```bash
 cd src/main/resources/frontend
@@ -152,13 +164,13 @@ npm run dev
 
 启动后可访问 **http://localhost:5173**。前端会将 API 请求统一代理到网关 **http://localhost:16730**。
 
-### 6. 默认登录账户
+### 5. 默认登录账户
 
 | 账号 | 密码 | 角色 |
 |------|------|------|
-| `admin` | `123456` | 系统管理员 |
-| `teacher1` | `123456` | 教师 |
-| `student1` | `123456` | 学生 |
+| `admin` | `.env.microservices` 中的 `APP_DEFAULT_PASSWORD` | 系统管理员 |
+| `teacher01` | `.env.microservices` 中的 `APP_DEFAULT_PASSWORD` | 教师 |
+| `20010001` 至 `20010003` | `.env.microservices` 中的 `APP_DEFAULT_PASSWORD` | 学生 |
 
 
 ### 关键设计
@@ -189,21 +201,20 @@ npm run dev
 
 ## 环境变量
 
-所有配置均已外部化，支持通过环境变量覆盖。主要变量及默认值：
+Compose 启动变量保存在未提交的 `.env.microservices` 中，主要必填项如下：
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `SERVER_PORT` | `16730` | 后端服务端口 |
-| `DB_URL` | `jdbc:mysql://127.0.0.1:3306/exam_mvp` | MySQL 连接地址 |
-| `DB_USERNAME` | `root` | MySQL 用户名 |
-| `DB_PASSWORD` | _（空）_ | MySQL 密码 |
-| `REDIS_HOST` | `127.0.0.1` | Redis 主机 |
-| `REDIS_PORT` | `6379` | Redis 端口 |
-| `RABBITMQ_HOST` | `127.0.0.1` | RabbitMQ 主机 |
-| `RABBITMQ_PORT` | `5672` | RabbitMQ 端口 |
-| `MINIO_ENDPOINT` | `http://127.0.0.1:19000` | MinIO 地址 |
-| `JWT_SECRET` | _（仅开发）_ | JWT 签名密钥 |
-| `APP_DEFAULT_PASSWORD` | `Exam@2026` | 新用户默认密码 |
+| `MYSQL_ROOT_PASSWORD` | 无 | MySQL root 密码 |
+| `EXAM_DB_PASSWORD` | 无 | 各微服务及 Nacos、XXL-Job 专用账号密码 |
+| `NACOS_PASSWORD` | 无 | Nacos 管理员密码 |
+| `NACOS_AUTH_TOKEN` | 无 | Nacos 鉴权 Token |
+| `RABBITMQ_PASSWORD` | 无 | RabbitMQ 账号密码 |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | 无 | MinIO 管理凭据 |
+| `SERVICE_CLIENT_SECRET` | 无 | 服务间调用密钥 |
+| `XXL_JOB_ACCESS_TOKEN` | 无 | XXL-Job 调度令牌 |
+| `APP_DEFAULT_PASSWORD` | 无 | 演示账号及新用户默认密码 |
+| `APP_DEFAULT_PASSWORD_HASH` | 无 | 与默认密码对应的 BCrypt 哈希 |
 
 ## 运行测试
 

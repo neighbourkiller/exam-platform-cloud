@@ -1,60 +1,475 @@
+x-service-env: &service-env
+  NACOS_SERVER_ADDR: "nacos:8848"
+  NACOS_NAMESPACE: dev
+  NACOS_USERNAME: "${NACOS_USERNAME:-nacos}"
+  NACOS_PASSWORD: "${NACOS_PASSWORD:?NACOS_PASSWORD is required}"
+  MYSQL_HOST: mysql
+  REDIS_HOST: redis
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_USERNAME: "${RABBITMQ_USERNAME:-exam}"
+  RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}"
+  MINIO_ENDPOINT: "http://minio:9000"
+  MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}"
+  MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}"
+  JWT_PUBLIC_KEY_LOCATION: "/run/secrets/jwt-public.pem"
+  SERVICE_CLIENT_SECRET: "${SERVICE_CLIENT_SECRET:?SERVICE_CLIENT_SECRET is required}"
+
 services:
   mysql:
     image: mysql:8.4
-    container_name: exam-mysql
-    restart: always
-    ports:
-      - "13306:3306"
+    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: 123456
-      MYSQL_DATABASE: exam_mvp
-    volumes:
-      - mysql_data:/var/lib/mysql
-
-  rabbitmq:
-    image: rabbitmq:4-management
-    container_name: exam-rabbitmq
-    restart: always
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"
+      XXL_JOB_ADMIN_PASSWORD: "${XXL_JOB_ADMIN_PASSWORD:?XXL_JOB_ADMIN_PASSWORD is required}"
+      EXAM_DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
     ports:
-      - "15673:5672"
-      - "15674:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
-      RABBITMQ_DEFAULT_VHOST: /
+      - "23306:3306"
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - mysql-data:/var/lib/mysql
+      - ./deploy/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p\"$$MYSQL_ROOT_PASSWORD\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
   redis:
-    image: redis/redis-stack:latest
-    container_name: exam-redis-stack
-    restart: always
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    entrypoint: ["sh", "/usr/local/bin/exam-redis-entrypoint.sh"]
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     ports:
-      - "16379:6379"
-      - "18001:8001"
+      - "127.0.0.1:26379:6379"
     volumes:
-      - redis_data:/data
+      - redis-data:/data
+      - ./deploy/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./deploy/redis/entrypoint.sh:/usr/local/bin/exam-redis-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      start_period: 20m
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USERNAME:-exam}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}"
+    ports:
+      - "15672:5672"
+      - "25672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   minio:
-    image: minio/minio
-    container_name: exam-minio
-    restart: always
-    command: server /data --address :9000 --console-address :9001
-    ports:
-      - "19000:9000"
-      - "19001:9001"
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address :9001
     environment:
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: password123
+      MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}"
+      MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}"
+    ports:
+      - "29000:9000"
+      - "29001:9001"
     volumes:
-      - minio_data:/data
+      - minio-data:/data
+
+  nacos:
+    image: nacos/nacos-server:v3.1.1
+    restart: unless-stopped
+    environment:
+      MODE: standalone
+      SPRING_DATASOURCE_PLATFORM: mysql
+      MYSQL_SERVICE_HOST: mysql
+      MYSQL_SERVICE_PORT: 3306
+      MYSQL_SERVICE_DB_NAME: nacos_config
+      MYSQL_SERVICE_USER: exam_nacos
+      MYSQL_SERVICE_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+      MYSQL_SERVICE_DB_PARAM: "characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai"
+      NACOS_AUTH_ENABLE: "true"
+      NACOS_AUTH_IDENTITY_KEY: "${NACOS_AUTH_IDENTITY_KEY:?NACOS_AUTH_IDENTITY_KEY is required}"
+      NACOS_AUTH_IDENTITY_VALUE: "${NACOS_AUTH_IDENTITY_VALUE:?NACOS_AUTH_IDENTITY_VALUE is required}"
+      NACOS_AUTH_TOKEN: "${NACOS_AUTH_TOKEN:?NACOS_AUTH_TOKEN is required}"
+    ports:
+      - "18081:8080"
+      - "18848:8848"
+      - "19848:9848"
+      - "19849:9849"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  nacos-config-init:
+    image: curlimages/curl:8.16.0
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    environment:
+      NACOS_SERVER: "http://nacos:8080"
+      NACOS_NAMESPACE: dev
+      NACOS_GROUP: EXAM_GROUP
+      NACOS_USERNAME: "${NACOS_USERNAME:-nacos}"
+      NACOS_PASSWORD: "${NACOS_PASSWORD:?NACOS_PASSWORD is required}"
+    volumes:
+      - ./deploy/nacos-config:/config:ro
+    command:
+      - |
+        deadline=$$(( $$(date +%s) + 180 ))
+        token=""
+        admin_initialized=false
+        while [ "$$(date +%s)" -lt "$$deadline" ]; do
+          response="$$(curl --silent --show-error --fail --max-time 5 \
+            -X POST "$$NACOS_SERVER/v3/auth/user/login" \
+            --data-urlencode "username=$$NACOS_USERNAME" \
+            --data-urlencode "password=$$NACOS_PASSWORD" 2>/dev/null || true)"
+          token="$$(printf '%s' "$$response" | sed -n 's/.*"accessToken"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+          [ -n "$$token" ] && break
+          if [ "$$admin_initialized" = false ]; then
+            curl --silent --show-error --fail --max-time 5 \
+              -X POST "$$NACOS_SERVER/v3/auth/user/admin" \
+              --data-urlencode "username=$$NACOS_USERNAME" \
+              --data-urlencode "password=$$NACOS_PASSWORD" >/dev/null 2>&1 || true
+            admin_initialized=true
+          fi
+          sleep 2
+        done
+        if [ -z "$$token" ]; then
+          echo "Nacos 未就绪，或凭据与已有数据卷不一致。" >&2
+          exit 1
+        fi
+        namespace_response="$$(curl --silent --show-error --fail --get \
+          "$$NACOS_SERVER/v3/console/core/namespace/list" \
+          --data-urlencode "accessToken=$$token")"
+        if ! printf '%s' "$$namespace_response" | grep -Eq \
+          '"namespace"[[:space:]]*:[[:space:]]*"'"$$NACOS_NAMESPACE"'"'; then
+          create_response="$$(curl --silent --show-error --fail \
+            -X POST "$$NACOS_SERVER/v3/console/core/namespace" \
+            --data-urlencode "accessToken=$$token" \
+            --data-urlencode "customNamespaceId=$$NACOS_NAMESPACE" \
+            --data-urlencode "namespaceName=$$NACOS_NAMESPACE" \
+            --data-urlencode "namespaceDesc=Exam $$NACOS_NAMESPACE environment")"
+          printf '%s' "$$create_response" | grep -Eq '"code"[[:space:]]*:[[:space:]]*0' || exit 1
+        fi
+        for config_file in /config/*.yml; do
+          data_id="$$(basename "$$config_file")"
+          publish_response="$$(curl --silent --show-error --fail \
+            -X POST "$$NACOS_SERVER/v3/console/cs/config" \
+            --data-urlencode "accessToken=$$token" \
+            --data-urlencode "dataId=$$data_id" \
+            --data-urlencode "groupName=$$NACOS_GROUP" \
+            --data-urlencode "namespaceId=$$NACOS_NAMESPACE" \
+            --data-urlencode "type=yaml" \
+            --data-urlencode "content@$$config_file")"
+          printf '%s' "$$publish_response" | grep -Eq '"code"[[:space:]]*:[[:space:]]*0' || exit 1
+          echo "已发布 Nacos 配置：$$data_id"
+        done
+    depends_on:
+      nacos:
+        condition: service_started
+
+  xxl-job-admin:
+    image: xuxueli/xxl-job-admin:3.4.0
+    restart: unless-stopped
+    environment:
+      PARAMS: "--spring.datasource.url=jdbc:mysql://mysql:3306/xxl_job?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai --spring.datasource.username=exam_xxl --spring.datasource.password=${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required} --xxl.job.accessToken=${XXL_JOB_ACCESS_TOKEN:?XXL_JOB_ACCESS_TOKEN is required}"
+    ports:
+      - "18080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  jwt-key-init:
+    image: alpine:3.22
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        apk add --no-cache openssl >/dev/null
+        umask 077
+        if [ ! -s /keys/jwt-private.pem ]; then
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /keys/jwt-private.pem
+        fi
+        openssl pkey -in /keys/jwt-private.pem -pubout -out /keys/jwt-public.pem
+        chmod 600 /keys/jwt-private.pem
+        chmod 644 /keys/jwt-public.pem
+    volumes:
+      - jwt-keys:/keys
+
+  gateway:
+    build:
+      context: .
+      args:
+        JAR_FILE: services/exam-gateway/target/exam-gateway-1.0.0-SNAPSHOT.jar
+    restart: unless-stopped
+    environment:
+      NACOS_SERVER_ADDR: "nacos:8848"
+      NACOS_NAMESPACE: dev
+      NACOS_USERNAME: "${NACOS_USERNAME:-nacos}"
+      NACOS_PASSWORD: "${NACOS_PASSWORD:?NACOS_PASSWORD is required}"
+      JWT_PUBLIC_KEY_LOCATION: "/run/secrets/jwt-public.pem"
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
+      REDIS_HOST: redis
+    volumes:
+      - jwt-keys:/run/secrets:ro
+    ports:
+      - "16730:16730"
+    depends_on:
+      redis:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      jwt-key-init:
+        condition: service_completed_successfully
+
+  iam-service:
+    build:
+      context: .
+      args:
+        JAR_FILE: services/exam-iam-service/target/exam-iam-service-1.0.0-SNAPSHOT.jar
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      DB_USERNAME: exam_iam
+      DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+      JWT_PRIVATE_KEY_LOCATION: "/run/secrets/jwt-private.pem"
+      APP_DEFAULT_PASSWORD: "${APP_DEFAULT_PASSWORD:?APP_DEFAULT_PASSWORD is required}"
+    volumes:
+      - jwt-keys:/run/secrets:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      jwt-key-init:
+        condition: service_completed_successfully
+
+  academic-service:
+    build:
+      context: .
+      args:
+        JAR_FILE: services/exam-academic-service/target/exam-academic-service-1.0.0-SNAPSHOT.jar
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_CLIENT_ID: exam-academic-service
+      DB_USERNAME: exam_academic
+      DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+    volumes:
+      - jwt-keys:/run/secrets:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      jwt-key-init:
+        condition: service_completed_successfully
+
+  content-service:
+    build:
+      context: .
+      args:
+        JAR_FILE: services/exam-content-service/target/exam-content-service-1.0.0-SNAPSHOT.jar
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_CLIENT_ID: exam-content-service
+      DB_USERNAME: exam_content
+      DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+    volumes:
+      - jwt-keys:/run/secrets:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      nacos-config-init:
+        condition: service_completed_successfully
+      jwt-key-init:
+        condition: service_completed_successfully
+
+  management-service:
+    build:
+      context: .
+      args:
+        JAR_FILE: services/exam-management-service/target/exam-management-service-1.0.0-SNAPSHOT.jar
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_CLIENT_ID: exam-management-service
+      DB_USERNAME: exam_management
+      DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+    volumes:
+      - jwt-keys:/run/secrets:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      jwt-key-init:
+        condition: service_completed_successfully
+
+  runtime-service:
+    build:
+      context: .
+      args:
+        JAR_FILE: services/exam-runtime-service/target/exam-runtime-service-1.0.0-SNAPSHOT.jar
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      XXL_JOB_ADMIN_ADDRESSES: "http://xxl-job-admin:8080/xxl-job-admin"
+      XXL_JOB_ACCESS_TOKEN: "${XXL_JOB_ACCESS_TOKEN:?XXL_JOB_ACCESS_TOKEN is required}"
+      XXL_JOB_EXECUTOR_PORT: 19999
+      SERVICE_CLIENT_ID: exam-runtime-service
+      DB_USERNAME: exam_runtime
+      DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+      APP_EXAM_ENTRY_V2_ENABLED: "${APP_EXAM_ENTRY_V2_ENABLED:-false}"
+      APP_TIMEOUT_SUBMISSION_V2_ENABLED: "${APP_TIMEOUT_SUBMISSION_V2_ENABLED:-false}"
+    volumes:
+      - jwt-keys:/run/secrets:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      nacos-config-init:
+        condition: service_completed_successfully
+      xxl-job-admin:
+        condition: service_started
+      jwt-key-init:
+        condition: service_completed_successfully
+    deploy:
+      replicas: ${APP_RUNTIME_REPLICAS:-4}
+
+  grading-service:
+    build:
+      context: .
+      args:
+        JAR_FILE: services/exam-grading-service/target/exam-grading-service-1.0.0-SNAPSHOT.jar
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_CLIENT_ID: exam-grading-service
+      DB_USERNAME: exam_grading
+      DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+    volumes:
+      - jwt-keys:/run/secrets:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      jwt-key-init:
+        condition: service_completed_successfully
+
+  reporting-service:
+    build:
+      context: .
+      args:
+        JAR_FILE: services/exam-reporting-service/target/exam-reporting-service-1.0.0-SNAPSHOT.jar
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      SERVICE_CLIENT_ID: exam-reporting-service
+      DB_USERNAME: exam_reporting
+      DB_PASSWORD: "${EXAM_DB_PASSWORD:?EXAM_DB_PASSWORD is required}"
+    volumes:
+      - jwt-keys:/run/secrets:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      jwt-key-init:
+        condition: service_completed_successfully
+
+  app-data-init:
+    image: mysql:8.4
+    restart: "no"
+    environment:
+      MYSQL_PWD: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"
+      APP_DEFAULT_PASSWORD_HASH: "${APP_DEFAULT_PASSWORD_HASH:?APP_DEFAULT_PASSWORD_HASH is required}"
+    volumes:
+      - ./deploy/seed-data:/seed-data:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        case "$$APP_DEFAULT_PASSWORD_HASH" in
+          '{bcrypt}'\$$2*) ;;
+          *) echo "APP_DEFAULT_PASSWORD_HASH 必须是带 {bcrypt} 前缀的 BCrypt 哈希。" >&2; exit 1 ;;
+        esac
+        deadline=$$(( $$(date +%s) + 180 ))
+        while [ "$$(date +%s)" -lt "$$deadline" ]; do
+          table_count="$$(mysql -hmysql -uroot -Nse "
+            SELECT COUNT(*)
+              FROM information_schema.tables
+             WHERE (table_schema='exam_iam' AND table_name IN ('sys_role','sys_user','sys_user_role'))
+                OR (table_schema='exam_academic' AND table_name IN ('student_profile','teacher_profile','subject'))
+                OR (table_schema='exam_content' AND table_name='question');
+          " 2>/dev/null || true)"
+          [ "$$table_count" = "7" ] && break
+          sleep 2
+        done
+        if [ "$${table_count:-}" != "7" ]; then
+          echo "等待业务 Flyway 数据表就绪超时。" >&2
+          exit 1
+        fi
+        {
+          printf "SET @seed_password_hash = '%s';\n" "$$APP_DEFAULT_PASSWORD_HASH"
+          cat /seed-data/exam-iam.sql
+        } | mysql --default-character-set=utf8mb4 -hmysql -uroot exam_iam
+        mysql --default-character-set=utf8mb4 -hmysql -uroot exam_academic < /seed-data/exam-academic.sql
+        mysql --default-character-set=utf8mb4 -hmysql -uroot exam_content < /seed-data/exam-content.sql
+        echo "演示账号、课程和题库数据初始化完成。"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      iam-service:
+        condition: service_started
+      academic-service:
+        condition: service_started
+      content-service:
+        condition: service_started
 
 volumes:
-  rabbitmq_data:
-    name: rabbitmq-data
-  redis_data:
-    name: redis-data
-  minio_data:
-    name: minio_exam_data
-  mysql_data:
-    name: mysql-exam-data
+  mysql-data:
+    name: exam-platform-cloud-mysql-data
+  redis-data:
+    name: exam-platform-cloud-redis-data
+  rabbitmq-data:
+    name: exam-platform-cloud-rabbitmq-data
+  minio-data:
+    name: exam-platform-cloud-minio-data
+  jwt-keys:
+    name: exam-platform-cloud-jwt-keys
+
+networks:
+  default:
+    name: exam-cloud

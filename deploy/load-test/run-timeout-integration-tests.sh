@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env.microservices}"
-MYSQL_CONTAINER="${MYSQL_CONTAINER:-exam-platform-cloud-mysql-1}"
 TEST_DATABASE="${TIMEOUT_TEST_DATABASE:-timeout_test}"
+COMPOSE=(docker compose -p exam-platform-cloud -f "$PROJECT_ROOT/docker-compose.yml" --env-file "$ENV_FILE")
 
 if [[ ! "$TEST_DATABASE" =~ ^[A-Za-z0-9_]*test[A-Za-z0-9_]*$ ]]; then
     echo "测试数据库名称只能包含字母、数字和下划线，并且必须包含 test：$TEST_DATABASE" >&2
@@ -20,7 +20,7 @@ set -a
 source "$ENV_FILE"
 set +a
 
-docker exec "$MYSQL_CONTAINER" sh -c '
+"${COMPOSE[@]}" exec -T mysql sh -c '
 mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "
 CREATE DATABASE IF NOT EXISTS '$TEST_DATABASE'
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

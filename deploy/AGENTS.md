@@ -4,15 +4,16 @@
 
 ## Compose 与启动
 
-- `compose.yaml` 是当前本地微服务栈的唯一标准入口；`docker-compose.yml` 是历史文件，不得混用。
-- 调用 Compose 时显式使用 `docker compose -p exam-platform-cloud -f compose.yaml --env-file .env.microservices ...`，不要依赖自动选择配置文件。
-- WSL 一键启动入口是 `bash deploy/start-local.sh`；分阶段操作以当前 `prepare-local-deployment`、`publish-nacos` 脚本及其参数为准。
-- 不在本文件复述完整启动步骤、端口或基础设施版本；修改部署流程时同步更新对应脚本和专用操作文档。
+- `docker-compose.yml` 是唯一 Compose 入口，负责中间件、初始化配置、初始数据与微服务容器编排；禁止新增或恢复其他 Compose 部署入口。
+- 调用 Compose 时显式使用 `docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.microservices ...`，不要依赖自动选择配置文件。
+- 宿主机部署脚本只允许作为调用 `docker-compose.yml` 的示例，不得生成配置、发布 Nacos、写数据库、单独启动中间件或在宿主机构建 JAR。
+- `deploy/mysql/init/` 与 `deploy/redis/` 下的脚本是由中间件容器内部调用的初始化或入口逻辑，不是宿主机部署入口。
+- 不在本文件复述完整启动步骤、端口或基础设施版本；修改部署流程时同步更新 README 和专用运维文档。
 
 ## Nacos 与机密
 
-- Nacos 配置源文件位于 `deploy/nacos-config/`；修改后必须通过当前发布脚本发布，不能假设仓库文件会自动进入运行中的 Nacos。
-- `.env.microservices` 和 `deploy/secrets/` 只保存本地机密且保持 Git 忽略；禁止提交、打印、写入文档或复制其值。
+- Nacos 配置源文件位于 `deploy/nacos-config/`；`docker-compose.yml` 中的 `nacos-config-init` 一次性服务负责通过 Nacos API 幂等发布，不能假设只修改仓库文件就会改变运行中配置。
+- `.env.microservices` 只保存本地机密且保持 Git 忽略；JWT 密钥由 `jwt-key-init` 写入 Compose 命名卷。禁止提交、打印、写入文档或复制任何真实值。
 - 脚本、日志、截图和错误信息不得泄露密码、JWT 私钥、服务间密钥或容器环境变量。
 
 ## 运维与排障

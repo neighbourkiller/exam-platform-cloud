@@ -8,6 +8,12 @@ import { fileURLToPath } from 'node:url'
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(scriptDirectory, '..', '..')
+const envFile = process.env.ENV_FILE || path.join(projectRoot, '.env.microservices')
+const composeArguments = [
+  'compose', '-p', 'exam-platform-cloud',
+  '-f', path.join(projectRoot, 'docker-compose.yml'),
+  '--env-file', envFile
+]
 const users = positiveInteger(process.env.USERS || '10000', 'USERS')
 const examId = positiveInteger(process.env.EXAM_ID || '99000001', 'EXAM_ID')
 const dueInSeconds = positiveInteger(process.env.DUE_IN_SECONDS || '120', 'DUE_IN_SECONDS')
@@ -20,16 +26,18 @@ const tokenFile = process.env.TOKENS_FILE
   : path.join(scriptDirectory, `tokens-${examId}.json`)
 const privateKeyFile = process.env.JWT_PRIVATE_KEY_FILE
   ? path.resolve(process.env.JWT_PRIVATE_KEY_FILE)
-  : path.join(projectRoot, 'deploy', 'secrets', 'jwt-private.pem')
+  : null
 
-if (!fs.existsSync(privateKeyFile)) {
+if (privateKeyFile && !fs.existsSync(privateKeyFile)) {
   throw new Error(`JWT private key does not exist: ${privateKeyFile}`)
 }
 
 const answerTemplate = buildAnswers(payloadBytes)
 const samplePayload = snapshotPayload(studentBase + 1n, answerTemplate)
 const actualPayloadBytes = Buffer.byteLength(samplePayload)
-const privateKey = fs.readFileSync(privateKeyFile, 'utf8')
+const privateKey = privateKeyFile
+  ? fs.readFileSync(privateKeyFile, 'utf8')
+  : await readComposePrivateKey()
 
 process.stdout.write(`Preparing ${users} timeout sessions; snapshot bytes=${actualPayloadBytes}\n`)
 await seedRedis(answerTemplate)
@@ -51,6 +59,21 @@ function positiveInteger(value, name) {
     throw new Error(`${name} must be a positive safe integer`)
   }
   return parsed
+}
+
+async function readComposePrivateKey() {
+  const child = spawn('docker', [
+    ...composeArguments, 'exec', '-T', 'iam-service',
+    'cat', '/run/secrets/jwt-private.pem'
+  ], { stdio: ['ignore', 'pipe', 'inherit'] })
+  let stdout = ''
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', chunk => { stdout += chunk })
+  const [exitCode] = await once(child, 'close')
+  if (exitCode !== 0 || !stdout.includes('BEGIN PRIVATE KEY')) {
+    throw new Error('Unable to read the Compose-managed JWT private key')
+  }
+  return stdout
 }
 
 function buildAnswers(targetBytes) {
@@ -289,7 +312,7 @@ FROM seq;
 SELECT ROUND(UNIX_TIMESTAMP(@due_at)*1000);
 `
   const child = spawn('docker', [
-    'exec', '-i', 'exam-platform-cloud-mysql-1', 'sh', '-c',
+    ...composeArguments, 'exec', '-T', 'mysql', 'sh', '-c',
     'mysql -uexam_runtime -p"$EXAM_DB_PASSWORD" -N exam_runtime'
   ], { stdio: ['pipe', 'pipe', 'inherit'] })
   child.stdin.end(sql)
