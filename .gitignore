@@ -71,12 +71,9 @@ skills-lock.json
 .github/
 
 ### Personal / Non-project Files ###
-docs/面试/面试.md
-docs/面试/resume_images/
-resume_page.png
-docs/
 projects/
 .tmp.driveupload/
 .playwright-cli/
 
 scratch/
+deploy/load-test/results

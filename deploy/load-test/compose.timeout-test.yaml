@@ -1,4 +1,33 @@
 services:
+  mysql:
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max_connections=${TIMEOUT_TEST_MYSQL_MAX_CONNECTIONS:-300}
+      - --innodb_buffer_pool_size=${TIMEOUT_TEST_MYSQL_BUFFER_POOL_SIZE:-2G}
+      - --innodb_redo_log_capacity=${TIMEOUT_TEST_MYSQL_REDO_LOG_CAPACITY:-1G}
+
   runtime-service:
+    build:
+      dockerfile: deploy/load-test/Dockerfile.runtime-local
+      network: host
+    restart: "no"
     environment:
       APP_TIMEOUT_SUBMISSION_V2_ENABLED: "true"
+
+volumes:
+  mysql-data:
+    name: exam-platform-cloud-timeout-mysql-data
+  redis-data:
+    name: exam-platform-cloud-timeout-redis-data
+  rabbitmq-data:
+    name: exam-platform-cloud-timeout-rabbitmq-data
+  minio-data:
+    name: exam-platform-cloud-timeout-minio-data
+  jwt-keys:
+    name: exam-platform-cloud-timeout-jwt-keys
+
+networks:
+  default:
+    name: exam-cloud-timeout

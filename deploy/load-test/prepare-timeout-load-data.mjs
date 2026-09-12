@@ -3,15 +3,21 @@ import { once } from 'node:events'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(scriptDirectory, '..', '..')
 const envFile = process.env.ENV_FILE || path.join(projectRoot, '.env.microservices')
+const composeProject = process.env.COMPOSE_PROJECT_NAME || 'exam-platform-cloud-timeout'
+const composeOverrideFile = process.env.COMPOSE_OVERRIDE_FILE
+  ? path.resolve(process.env.COMPOSE_OVERRIDE_FILE)
+  : path.join(scriptDirectory, 'compose.timeout-test.yaml')
 const composeArguments = [
-  'compose', '-p', 'exam-platform-cloud',
+  'compose', '-p', composeProject,
   '-f', path.join(projectRoot, 'docker-compose.yml'),
+  '-f', composeOverrideFile,
   '--env-file', envFile
 ]
 const users = positiveInteger(process.env.USERS || '10000', 'USERS')
@@ -35,11 +41,19 @@ if (privateKeyFile && !fs.existsSync(privateKeyFile)) {
 const answerTemplate = buildAnswers(payloadBytes)
 const samplePayload = snapshotPayload(studentBase + 1n, answerTemplate)
 const actualPayloadBytes = Buffer.byteLength(samplePayload)
+const canonicalDraft = Buffer.from(JSON.stringify({
+  answers: Object.fromEntries(answerTemplate.map(answer => [answer.questionId, answer.answerText]))
+}))
+const compressedDraft = zlib.gzipSync(canonicalDraft)
+const draftSha256 = crypto.createHash('sha256').update(canonicalDraft).digest('hex')
 const privateKey = privateKeyFile
   ? fs.readFileSync(privateKeyFile, 'utf8')
   : await readComposePrivateKey()
 
-process.stdout.write(`Preparing ${users} timeout sessions; snapshot bytes=${actualPayloadBytes}\n`)
+process.stdout.write(
+  `Preparing ${users} timeout sessions; snapshot bytes=${actualPayloadBytes}; `
+    + `draft gzip bytes=${compressedDraft.length}\n`
+)
 await seedRedis(answerTemplate)
 await writeTokens(privateKey)
 const deadlineEpochMs = await seedMySql()
@@ -251,7 +265,7 @@ async function writeTokens(key) {
     const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput), key)
     tokens.push(`${signingInput}.${signature.toString('base64url')}`)
   }
-  fs.writeFileSync(tokenFile, JSON.stringify(tokens), { mode: 0o600 })
+  fs.writeFileSync(tokenFile, JSON.stringify(tokens), { mode: 0o644 })
   process.stdout.write(`JWT tokens: ${tokens.length}; output is intentionally not printed\n`)
 }
 
@@ -266,17 +280,27 @@ SET @exam_id=${examId};
 SET @student_base=${studentBase};
 SET @session_base=${sessionBase};
 SET @submission_base=${submissionBase};
-SET @due_at=TIMESTAMPADD(SECOND,${dueInSeconds},CURRENT_TIMESTAMP(3));
+SET @staging_due_at=TIMESTAMPADD(DAY,1,CURRENT_TIMESTAMP(3));
 
+SET @fixture_span=1000000;
 DELETE fp FROM submission_final_payload fp
-JOIN submission s ON s.id=fp.submission_id WHERE s.exam_id=@exam_id;
+JOIN submission s ON s.id=fp.submission_id
+WHERE s.exam_id=@exam_id OR (s.id>@submission_base AND s.id<=@submission_base+@fixture_span);
+DELETE dp FROM submission_draft_payload dp
+JOIN submission s ON s.id=dp.submission_id
+WHERE s.exam_id=@exam_id OR (s.id>@submission_base AND s.id<=@submission_base+@fixture_span);
 DELETE oe FROM outbox_event oe
-JOIN submission s ON oe.aggregate_id=CAST(s.id AS CHAR) WHERE s.exam_id=@exam_id;
+JOIN submission s ON oe.aggregate_id=CAST(s.id AS CHAR)
+WHERE s.exam_id=@exam_id OR (s.id>@submission_base AND s.id<=@submission_base+@fixture_span);
 DELETE sa FROM submission_answer sa
-JOIN submission s ON s.id=sa.submission_id WHERE s.exam_id=@exam_id;
-DELETE FROM submission_timeout_task WHERE exam_id=@exam_id;
-DELETE FROM submission WHERE exam_id=@exam_id;
-DELETE FROM exam_session WHERE exam_id=@exam_id;
+JOIN submission s ON s.id=sa.submission_id
+WHERE s.exam_id=@exam_id OR (s.id>@submission_base AND s.id<=@submission_base+@fixture_span);
+DELETE FROM submission_timeout_task
+WHERE exam_id=@exam_id OR (session_id>@session_base AND session_id<=@session_base+@fixture_span);
+DELETE FROM submission
+WHERE exam_id=@exam_id OR (id>@submission_base AND id<=@submission_base+@fixture_span);
+DELETE FROM exam_session
+WHERE exam_id=@exam_id OR (id>@session_base AND id<=@session_base+@fixture_span);
 
 INSERT INTO exam_session(
   id,exam_id,student_id,status,start_time,deadline_time,last_snapshot_time,
@@ -286,7 +310,7 @@ WITH RECURSIVE seq(n) AS (
   SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<${users}
 )
 SELECT @session_base+n,@exam_id,@student_base+n,'ANSWERING',CURRENT_TIMESTAMP(3),
-       @due_at,CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3)
+       @staging_due_at,CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3)
 FROM seq;
 
 INSERT INTO submission(
@@ -295,20 +319,35 @@ INSERT INTO submission(
 WITH RECURSIVE seq(n) AS (
   SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<${users}
 )
-SELECT @submission_base+n,@exam_id,@student_base+n,'IN_PROGRESS',0,0,
+SELECT @submission_base+n,@exam_id,@student_base+n,'IN_PROGRESS',0,1,
        CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3)
 FROM seq;
 
-INSERT IGNORE INTO submission_timeout_task(
-  id,session_id,exam_id,student_id,due_at,status,attempt_count,created_at,updated_at
+INSERT INTO submission_draft_payload(
+  submission_id,client_id,client_sequence,server_revision,codec,payload,payload_sha256,
+  accepted_at,created_at,updated_at
 )
 WITH RECURSIVE seq(n) AS (
   SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<${users}
 )
-SELECT @session_base+n,@session_base+n,@exam_id,@student_base+n,@due_at,'PENDING',0,
+SELECT @submission_base+n,'timeout-load',1,1,'GZIP_JSON_V1',
+       UNHEX('${compressedDraft.toString('hex')}'),'${draftSha256}',
+       CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3)
+FROM seq;
+
+INSERT IGNORE INTO submission_timeout_task(
+  id,session_id,exam_id,student_id,submission_id,due_at,status,attempt_count,created_at,updated_at
+)
+WITH RECURSIVE seq(n) AS (
+  SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<${users}
+)
+SELECT @session_base+n,@session_base+n,@exam_id,@student_base+n,@submission_base+n,@staging_due_at,'PENDING',0,
        CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3)
 FROM seq;
 
+SET @due_at=TIMESTAMPADD(SECOND,${dueInSeconds},CURRENT_TIMESTAMP(3));
+UPDATE exam_session SET deadline_time=@due_at WHERE exam_id=@exam_id;
+UPDATE submission_timeout_task SET due_at=@due_at WHERE exam_id=@exam_id;
 SELECT ROUND(UNIX_TIMESTAMP(@due_at)*1000);
 `
   const child = spawn('docker', [
