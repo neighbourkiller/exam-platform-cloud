@@ -23,6 +23,12 @@ public class InternalManagementController {
         this.service = service;
     }
 
+    @GetMapping("/{id}/regrade-context")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('SCOPE_internal')")
+    public ApiResponse<com.ekusys.exam.management.api.ExamRegradeContext> regradeContext(@PathVariable Long id) {
+        return ApiResponse.ok(service.regradeContext(id));
+    }
+
     @GetMapping("/papers/{paperId}/used")
     public ApiResponse<Boolean> used(@PathVariable Long paperId) {
         return ApiResponse.ok(service.isPaperUsed(paperId));

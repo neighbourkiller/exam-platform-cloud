@@ -36,6 +36,7 @@
         <module>apis/exam-content-api</module>
         <module>apis/exam-management-api</module>
         <module>apis/exam-runtime-api</module>
+        <module>apis/exam-grading-api</module>
         <module>services/exam-gateway</module>
         <module>services/exam-iam-service</module>
         <module>services/exam-academic-service</module>

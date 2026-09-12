@@ -206,6 +206,15 @@ public class ExamManagementService {
         return examMapper.selectCount(new LambdaQueryWrapper<Exam>().eq(Exam::getPaperId, paperId)) > 0;
     }
 
+    public com.ekusys.exam.management.api.ExamRegradeContext regradeContext(Long id) {
+        return jdbc.queryForObject("""
+            select e.id,e.publisher_id,e.status,e.end_time,r.paper_snapshot_id
+            from exam e join exam_paper_ref r on r.exam_id=e.id where e.id=?
+            """, (rs, n) -> new com.ekusys.exam.management.api.ExamRegradeContext(rs.getLong("id"),
+                rs.getObject("publisher_id", Long.class), rs.getLong("paper_snapshot_id"), rs.getString("status"),
+                rs.getObject("end_time", java.time.LocalDateTime.class)), id);
+    }
+
     public RuntimeExamMetadata runtimeMetadata(Long id) {
         return metadataCache.get(id, () -> loadMetadata(id));
     }

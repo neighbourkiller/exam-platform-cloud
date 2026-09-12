@@ -25,7 +25,7 @@ EkuExam Cloud is a cloud-native, microservice-based online exam and grading plat
 - **Exam Lifecycle** - Create, schedule, publish, start, submit, and terminate exams with target class control.
 - **Real-time Answer Snapshots** - Saves student progress every 30 seconds to Redis, persisting to MySQL on submission or session expiry.
 - **Anti-cheating Proctoring** - Tab-switch detection, automated webcam screenshot evidence uploads, activity logging, and teacher-side disposition tools.
-- **Grading Engine** - Automated grading for objective questions; subjective answers are routed to a manual grading queue with batch-scoring support.
+- **Grading Engine** - Automated grading for objective questions; subjective answers are routed to a manual grading queue with batch-scoring support. Finished exams support versioned answer corrections, resumable regrading, and historical answer restoration; see [regrading operations](deploy/REGRADE_OPERATIONS.md).
 - **Analytics Dashboard** - Score distribution, class performance trends, wrong-answer ratios, and per-student score breakdowns visualized with ECharts.
 - **Admin Management** - Bulk import of users/classes/courses via CSV/Excel, role mapping, and detailed operation audit logging.
 

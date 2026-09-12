@@ -102,6 +102,17 @@ public class ReportingEventConsumer {
     }
 
     private void projectGrade(JsonNode data) {
+        Long sid = requiredLong(data, "submissionId");
+        long revision = data.path("gradeRevision").asLong(0);
+        jdbc.update("""
+            insert ignore into rpt_student_score(submission_id,exam_id,student_id,status,submitted_at,updated_at)
+            values(?,?,?,'SUBMITTED',?,current_timestamp(3))
+            """, sid, requiredLong(data, "examId"), requiredLong(data, "studentId"),
+            LocalDateTime.parse(requiredText(data, "submittedAt")));
+        long current = jdbc.queryForObject("select grade_revision from rpt_student_score where submission_id=? for update", Long.class, sid);
+        if (revision <= current) return;
+        jdbc.update("update rpt_student_score set grade_revision=?,answer_version=? where submission_id=?",
+            revision, data.path("answerVersion").asLong(0), sid);
         jdbc.update(
             """
                 insert into rpt_student_score(submission_id,exam_id,student_id,status,objective_score,subjective_score,

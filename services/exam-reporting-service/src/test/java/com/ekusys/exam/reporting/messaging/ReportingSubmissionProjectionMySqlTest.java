@@ -67,6 +67,71 @@ class ReportingSubmissionProjectionMySqlTest {
     }
 
     @Test
+    void repeatedOutOfOrderAndLegacyGradesCannotOverwriteLatestScoreOrAnswers() throws Exception {
+        consumer.consume(grade("new", 3, 20, true));
+        consumer.consume(grade("old", 2, 0, false));
+        consumer.consume(grade("new", 3, 20, true));
+        consumer.consume(grade("equal", 3, 0, false));
+        consumer.consume(grade("legacy", 0, 0, false).replace("\"gradeRevision\":0,", ""));
+        assertThat(jdbc.queryForObject("select total_score from rpt_student_score where submission_id=30", Integer.class)).isEqualTo(20);
+        assertThat(jdbc.queryForObject("select correct_flag from rpt_objective_answer where submission_id=30", Integer.class)).isEqualTo(1);
+        consumer.consume(grade("restore", 4, 0, false));
+        assertThat(jdbc.queryForObject("select total_score from rpt_student_score where submission_id=30", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("select correct_flag from rpt_objective_answer where submission_id=30", Integer.class)).isZero();
+    }
+
+    @Test
+    void concurrentGradeEventsKeepTheHighestRevision() throws Exception {
+        var gate = new java.util.concurrent.CountDownLatch(2);
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var older = executor.submit(() -> {
+                gate.countDown(); gate.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                consumeTransactionally(grade("parallel-old", 3, 0, false)); return true;
+            });
+            var newer = executor.submit(() -> {
+                gate.countDown(); gate.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                consumeTransactionally(grade("parallel-new", 4, 20, true)); return true;
+            });
+            older.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            newer.get(20, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        assertThat(jdbc.queryForObject("select grade_revision from rpt_student_score where submission_id=30", Long.class)).isEqualTo(4L);
+        assertThat(jdbc.queryForObject("select total_score from rpt_student_score where submission_id=30", Integer.class)).isEqualTo(20);
+        assertThat(jdbc.queryForObject("select correct_flag from rpt_objective_answer where submission_id=30", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void invalidQuestionResultsRollBackRevisionScoreAndInbox() {
+        consumeTransactionally(grade("before-invalid", 3, 20, true));
+        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class, () ->
+            consumeTransactionally(grade("invalid", 4, 0, false).replace("\"questionId\":1,", "")));
+        assertThat(jdbc.queryForObject("select grade_revision from rpt_student_score where submission_id=30", Long.class)).isEqualTo(3L);
+        assertThat(jdbc.queryForObject("select total_score from rpt_student_score where submission_id=30", Integer.class)).isEqualTo(20);
+        assertThat(jdbc.queryForObject("select count(*) from inbox_event where event_id='invalid'", Integer.class)).isZero();
+        consumeTransactionally(grade("invalid", 4, 0, false));
+        assertThat(jdbc.queryForObject("select grade_revision from rpt_student_score where submission_id=30", Long.class)).isEqualTo(4L);
+    }
+
+    private void consumeTransactionally(String payload) {
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(
+            new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        transaction.executeWithoutResult(status -> {
+            try { consumer.consume(payload); }
+            catch (Exception exception) { throw new IllegalStateException(exception); }
+        });
+    }
+
+    private String grade(String event, long revision, int score, boolean correct) {
+        return """
+            {"eventId":"%s","eventType":"GradeCompleted","data":{
+              "submissionId":30,"examId":10,"studentId":20,"status":"GRADED",
+              "gradeRevision":%d,"answerVersion":1,"objectiveScore":%d,"subjectiveScore":0,
+              "totalScore":%d,"passFlag":%s,"submittedAt":"2026-09-01T10:00:00",
+              "questionResults":[{"questionId":1,"questionContent":"题目","correct":%s}]}}
+            """.formatted(event, revision, score, score, correct, correct);
+    }
+
+    @Test
     void lateSubmissionAcceptedEnrichesButNeverDowngradesGradedProjection() throws Exception {
         consumer.consume("""
             {

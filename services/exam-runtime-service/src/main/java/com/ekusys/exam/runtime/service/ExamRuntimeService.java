@@ -491,6 +491,15 @@ public class ExamRuntimeService {
         outbox.proctoringEvent(eventId);
     }
 
+    public com.ekusys.exam.runtime.api.SubmittedPage submittedPage(Long examId, long after, Long upperBound) {
+        long bound = upperBound == null ? jdbc.queryForObject(
+            "select coalesce(max(id),0) from submission where exam_id=? and submitted_at is not null and status<>'IN_PROGRESS'", Long.class, examId) : upperBound;
+        var ids = jdbc.queryForList("select id from submission where exam_id=? and submitted_at is not null and status<>'IN_PROGRESS' and id>? and id<=? order by id limit 100",
+            Long.class, examId, after, bound);
+        long total = jdbc.queryForObject("select count(*) from submission where exam_id=? and submitted_at is not null and status<>'IN_PROGRESS' and id<=?", Long.class, examId, bound);
+        return new com.ekusys.exam.runtime.api.SubmittedPage(ids, bound, total);
+    }
+
     public GradingSubmissionInput gradingInput(Long submissionId) {
         List<GradingSubmissionInput> rows = jdbc.query(
             "select id,exam_id,student_id,paper_snapshot_id,submitted_at from submission where id=?",

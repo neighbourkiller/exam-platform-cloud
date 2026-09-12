@@ -9,6 +9,10 @@ import lombok.Data;
 public class TeacherExamView {
 
     private Long examId;
+
+    /** Lossless identifier for browser actions; keeps the existing numeric field compatible. */
+    public String getExamIdText() { return examId == null ? null : examId.toString(); }
+
     private String name;
     private LocalDateTime startTime;
     private LocalDateTime endTime;

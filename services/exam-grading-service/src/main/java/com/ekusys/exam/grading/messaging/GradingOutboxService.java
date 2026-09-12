@@ -23,7 +23,7 @@ public class GradingOutboxService {
         GradeRow grade = jdbc.queryForObject(
             """
                 select gs.runtime_submission_id,gs.exam_id,gs.student_id,gs.exam_name,gs.submitted_at,
-                       gr.objective_score,gr.subjective_score,gr.total_score,gr.pass_flag,gr.status,gr.completed_at
+                       gr.objective_score,gr.subjective_score,gr.total_score,gr.pass_flag,gr.status,gr.completed_at,gr.grade_revision,gr.answer_version
                   from grading_submission gs
                   join grade_result gr on gr.runtime_submission_id=gs.runtime_submission_id
                  where gs.runtime_submission_id=?
@@ -33,7 +33,7 @@ public class GradingOutboxService {
                 rs.getString("exam_name"), rs.getObject("submitted_at", LocalDateTime.class),
                 rs.getInt("objective_score"), rs.getInt("subjective_score"), rs.getInt("total_score"),
                 rs.getBoolean("pass_flag"), rs.getString("status"),
-                rs.getObject("completed_at", LocalDateTime.class)
+                rs.getObject("completed_at", LocalDateTime.class), rs.getLong("grade_revision"), rs.getLong("answer_version")
             ),
             submissionId
         );
@@ -49,6 +49,8 @@ public class GradingOutboxService {
         data.put("passFlag", grade.passFlag());
         data.put("submittedAt", grade.submittedAt());
         data.put("completedAt", grade.completedAt());
+        data.put("gradeRevision", grade.gradeRevision());
+        data.put("answerVersion", grade.answerVersion());
         data.put("questionResults", jdbc.query(
             "select question_id,question_content,correct_flag from grading_answer_result where runtime_submission_id=? and objective_flag=1 order by question_id",
             (rs, rowNum) -> Map.of(
@@ -77,6 +79,6 @@ public class GradingOutboxService {
 
     private record GradeRow(Long submissionId, Long examId, Long studentId, String examName,
                             LocalDateTime submittedAt, int objectiveScore, int subjectiveScore,
-                            int totalScore, boolean passFlag, String status, LocalDateTime completedAt) {
+                            int totalScore, boolean passFlag, String status, LocalDateTime completedAt, long gradeRevision, long answerVersion) {
     }
 }

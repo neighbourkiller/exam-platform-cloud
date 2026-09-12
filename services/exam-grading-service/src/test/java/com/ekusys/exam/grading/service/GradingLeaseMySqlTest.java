@@ -52,7 +52,7 @@ class GradingLeaseMySqlTest {
         jdbc = new JdbcTemplate(ds);
         leases = new GradingLeaseService(jdbc);
         outbox = mock(GradingOutboxService.class);
-        var target = new GradingService(jdbc, mock(RuntimeGradingClient.class), mock(ContentGradingClient.class), outbox);
+        var target = new GradingService(jdbc, mock(RuntimeGradingClient.class), mock(ContentGradingClient.class), outbox, new AnswerKeyService(jdbc, new com.fasterxml.jackson.databind.ObjectMapper()));
         var factory = new ProxyFactory(target);
         factory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(ds),
             new AnnotationTransactionAttributeSource()));

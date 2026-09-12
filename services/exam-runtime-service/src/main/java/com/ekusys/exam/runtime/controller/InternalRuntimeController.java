@@ -25,6 +25,13 @@ public class InternalRuntimeController {
         this.reconciliation = reconciliation;
     }
 
+    @GetMapping("/exams/{examId}/submitted-page")
+    public ApiResponse<com.ekusys.exam.runtime.api.SubmittedPage> submittedPage(@PathVariable Long examId,
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue="0") long after,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) Long upperBound) {
+        return ApiResponse.ok(service.submittedPage(examId, after, upperBound));
+    }
+
     @GetMapping("/submissions/{id}/grading-input")
     public ApiResponse<GradingSubmissionInput> input(@PathVariable Long id) {
         return ApiResponse.ok(service.gradingInput(id));

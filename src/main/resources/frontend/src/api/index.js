@@ -114,3 +114,13 @@ export const teacherClassStudentCandidatesApi = (classId, data) =>
 export const gradingClaimApi = (answerId) => http.post(`/grading/answers/${answerId}/claim`)
 export const gradingRenewApi = (answerId, token) => http.post(`/grading/answers/${answerId}/renew`, { token })
 export const gradingReleaseApi = (answerId, token) => http.post(`/grading/answers/${answerId}/release`, { token })
+
+const regradeBase = (examId) => `/grading/exams/${examId}`
+export const regradeKeyApi = (examId) => http.get(`${regradeBase(examId)}/answer-key`)
+export const createRegradeApi = (examId, data) => http.post(`${regradeBase(examId)}/regrades`, data)
+export const regradeHistoryApi = (examId, page = 1) => http.get(`${regradeBase(examId)}/regrades`, { params: { page } })
+export const regradeDetailApi = (examId, jobId, page = 1) => http.get(`${regradeBase(examId)}/regrades/${jobId}`, { params: { page } })
+export const retryRegradeApi = (examId, jobId) => http.post(`${regradeBase(examId)}/regrades/${jobId}/retry`)
+export const restoreRegradeApi = (examId, version, data) => http.post(`${regradeBase(examId)}/answer-key/versions/${version}/restore`, data)
+export const regradeBankContextApi = (examId, jobId, syncId) => http.get(`${regradeBase(examId)}/regrades/${jobId}/bank-sync/${syncId}/context`)
+export const retryRegradeBankApi = (examId, jobId, syncId, fingerprint) => http.post(`${regradeBase(examId)}/regrades/${jobId}/bank-sync/${syncId}/retry`, { fingerprint })

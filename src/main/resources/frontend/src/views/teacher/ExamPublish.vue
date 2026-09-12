@@ -161,9 +161,10 @@
         </template>
       </el-table-column>
       <el-table-column prop="status" label="状态" width="110" />
-      <el-table-column label="操作" width="240">
+      <el-table-column label="操作" width="380">
         <template #default="scope">
           <div class="action-row">
+            <el-button v-if="canRegrade(scope.row)" size="small" @click="regradeExam = scope.row">答案纠错与重判</el-button>
             <el-button v-if="scope.row.status === 'DRAFT'" type="primary" size="small" @click="publish(scope.row.examId)">发布</el-button>
             <el-button
               v-if="scope.row.status === 'PUBLISHED' || scope.row.status === 'ONGOING'"
@@ -196,11 +197,17 @@
       </el-table-column>
     </el-table>
     <el-empty v-else description="暂无考试，点击上方「创建考试」开始" />
+    <el-dialog :model-value="Boolean(regradeExam)" :title="`${regradeExam?.name || ''} · 答案纠错与重判`" width="min(1200px, 95vw)" destroy-on-close @close="regradeExam = null">
+      <ExamRegrade v-if="regradeExam" :key="regradeExam.examIdText" :exam-id="regradeExam.examIdText" />
+    </el-dialog>
   </el-card>
 </template>
 
 <script setup>
 import { onMounted, reactive, ref, watch } from 'vue'
+import ExamRegrade from '../../components/regrading/ExamRegrade.vue'
+const regradeExam = ref(null)
+const canRegrade = row => Boolean(row.examIdText) && row.status !== 'DRAFT' && (row.status === 'TERMINATED' || new Date(row.endTime).getTime() <= Date.now())
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { createExamApi, examTeachingClassesApi, publishExamApi, queryPapersApi, teacherExamsApi, terminateExamApi } from '../../api'
