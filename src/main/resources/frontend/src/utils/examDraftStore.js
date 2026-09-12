@@ -1,7 +1,8 @@
 const DB_NAME = 'exam-local-drafts'
-const DB_VERSION = 2
+const DB_VERSION = 3
 const DRAFT_STORE_NAME = 'drafts'
 const QUEUE_STORE_NAME = 'syncQueue'
+const EVIDENCE_STORE_NAME = 'submissionEvidence'
 
 let openRequestPromise = null
 
@@ -48,6 +49,10 @@ const ensureStores = (db) => {
     const queueStore = db.createObjectStore(QUEUE_STORE_NAME, { keyPath: 'id', autoIncrement: true })
     queueStore.createIndex('byExam', 'examStorageKey', { unique: false })
     queueStore.createIndex('byNextAttemptAt', 'nextAttemptAt', { unique: false })
+  }
+  if (!db.objectStoreNames.contains(EVIDENCE_STORE_NAME)) {
+    const evidenceStore = db.createObjectStore(EVIDENCE_STORE_NAME, { keyPath: 'storageKey' })
+    evidenceStore.createIndex('byExpiresAt', 'expiresAt', { unique: false })
   }
 }
 
@@ -132,6 +137,8 @@ export const saveDraft = async ({
   lastSyncedAt,
   lastServerAckAt,
   snapshotVersion,
+  clientSequence,
+  serverRevision,
   dirty,
   pendingSubmitIntent,
   examRuntime
@@ -150,6 +157,8 @@ export const saveDraft = async ({
     lastSyncedAt: Number.isFinite(Number(lastSyncedAt)) ? Number(lastSyncedAt) : null,
     lastServerAckAt: lastServerAckAt || null,
     snapshotVersion: Number.isFinite(Number(snapshotVersion)) ? Number(snapshotVersion) : 0,
+    clientSequence: Number.isFinite(Number(clientSequence)) ? Number(clientSequence) : 0,
+    serverRevision: Number.isFinite(Number(serverRevision)) ? Number(serverRevision) : 0,
     pendingSubmitIntent: pendingSubmitIntent || null,
     dirty: Boolean(dirty)
   }
@@ -244,4 +253,66 @@ export const deleteSyncItem = async (id) => {
 export const clearSyncItems = async (userId, examId) => {
   const items = await listSyncItems(userId, examId)
   await Promise.all(items.map((item) => deleteSyncItem(item.id)))
+}
+
+export const saveSubmissionEvidence = async ({
+  userId,
+  examId,
+  answers,
+  snapshotVersion,
+  serverRevision,
+  failureCode,
+  incidentId,
+  attemptedAt = Date.now(),
+  expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000
+}) => {
+  if (!userId || !examId) return null
+  const record = {
+    storageKey: buildStorageKey(userId, examId),
+    userId: String(userId),
+    examId: String(examId),
+    answers: cloneAnswers(answers),
+    snapshotVersion: Number(snapshotVersion || 0),
+    serverRevision: Number(serverRevision || 0),
+    failureCode: failureCode || null,
+    incidentId: incidentId || null,
+    attemptedAt: Number(attemptedAt || Date.now()),
+    expiresAt: Number(expiresAt)
+  }
+  await withStore(EVIDENCE_STORE_NAME, 'readwrite', (store, done) => {
+    const request = store.put(record)
+    request.onerror = () => done(null)
+    request.onsuccess = () => done(record)
+  })
+  return record
+}
+
+export const loadSubmissionEvidence = async (userId, examId) => {
+  if (!userId || !examId) return null
+  return withStore(EVIDENCE_STORE_NAME, 'readonly', (store, done) => {
+    const request = store.get(buildStorageKey(userId, examId))
+    request.onerror = () => done(null)
+    request.onsuccess = () => done(request.result || null)
+  })
+}
+
+export const purgeExpiredSubmissionEvidence = async (now = Date.now()) => {
+  let removed = 0
+  await withStore(EVIDENCE_STORE_NAME, 'readwrite', (store, done) => {
+    const request = store.openCursor()
+    request.onerror = () => done(removed)
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (!cursor) {
+        done(removed)
+        return
+      }
+      if (Number(cursor.value?.expiresAt || 0) <= now) {
+        cursor.delete()
+        removed += 1
+      }
+      cursor.continue()
+    }
+  })
+  return removed
 }

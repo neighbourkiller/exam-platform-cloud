@@ -214,13 +214,15 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
 import { activateExamEntryApi, antiCheatApi, clientHeartbeatApi, healthPingApi, paperDeliveryApi, prepareExamEntryApi, snapshotApi, startExamApi, submissionStatusApi, submitExamApi, uploadAntiCheatEvidenceApi } from '../../api'
 import { useAuthStore } from '../../stores/auth'
 import { useCameraProctoring } from '../../composables/useCameraProctoring'
+import { useExamSnapshotSync } from '../../composables/useExamSnapshotSync'
+import { responseDeadlineEpochMs, useServerClock } from '../../composables/useServerClock'
 import {
   clearDraft,
   clearSyncItems,
@@ -228,7 +230,9 @@ import {
   enqueueSyncItem,
   listSyncItems,
   loadDraft,
+  purgeExpiredSubmissionEvidence,
   saveDraft,
+  saveSubmissionEvidence,
   updateSyncItem
 } from '../../utils/examDraftStore'
 import {
@@ -247,8 +251,11 @@ import {
   scheduledEntryDelayMs
 } from '../../utils/examEntryFlow'
 import {
+  SUBMISSION_CONFIRMATION_TIMEOUT_MS,
   createSubmissionPlan,
-  isSubmissionAccepted,
+  isRuntimeFinalized,
+  isSubmissionHandoffAccepted,
+  shouldRequestDeadlineHandoff,
   shouldRetryDeadlineWithAnswers,
   submissionPollDelay
 } from '../../utils/submissionFlow'
@@ -262,6 +269,14 @@ const MAX_ANSWER_TEXT_LENGTH = 16000
 const MAX_TOTAL_ANSWER_LENGTH = 1000000
 const EXAM_ENTRY_V2_CLIENT_ENABLED = import.meta.env.VITE_EXAM_ENTRY_V2_ENABLED !== 'false'
 const ENTRY_RETRY_TIMEOUT_MS = 30000
+const OFFLINE_EVIDENCE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const serverClock = useServerClock()
+const {
+  syncState,
+  observeAck: observeSnapshotAck,
+  restoreRevision: restoreSnapshotRevision,
+  nextClientSequence
+} = useExamSnapshotSync()
 
 const state = reactive({
   examId,
@@ -275,6 +290,7 @@ const showMarkedOnly = ref(false)
 const currentQuestionId = ref('')
 const secondsLeft = ref(null)
 const examEndAt = ref(null)
+const examDeadlineEpochMs = shallowRef(null)
 const blurStartedAt = ref(null)
 const hiddenStartedAt = ref(null)
 const offlineStartedAt = ref(null)
@@ -359,22 +375,6 @@ const cameraProctoring = useCameraProctoring({
     reportAntiCheatEvent(eventType, durationMs, payload, evidence),
   uploadEvidence: (blob, source, eventType) => uploadEvidence(blob, source, eventType)
 })
-const syncState = reactive({
-  userId: null,
-  initialized: false,
-  dirty: false,
-  syncing: false,
-  updatedAt: 0,
-  lastSyncedAt: null,
-  localSaving: false,
-  localSavedAt: null,
-  localSaveFailed: false,
-  syncErrorAt: null,
-  lastSyncErrorMessage: '',
-  lastServerAckAt: null,
-  snapshotVersion: 0
-})
-
 const answeredCount = computed(() =>
   state.questions.filter((q) => isQuestionAnswered(q)).length
 )
@@ -1012,6 +1012,10 @@ const reportAntiCheatEvent = async (eventType, durationMs = 0, extraPayload = {}
 }
 
 const resolveExamEndTime = (data) => {
+  const epochMs = responseDeadlineEpochMs(data)
+  if (Number.isFinite(epochMs)) {
+    return new Date(epochMs)
+  }
   const deadline = parseDateTime(data?.deadlineTime)
   if (deadline) {
     return deadline
@@ -1036,13 +1040,11 @@ const syncCountdown = () => {
     secondsLeft.value = null
     return
   }
-  secondsLeft.value = Math.max(0, Math.floor((examEndAt.value.getTime() - Date.now()) / 1000))
+  secondsLeft.value = serverClock.secondsUntil(examDeadlineEpochMs.value)
 }
 
 const isExamExpiredLocally = () =>
-  examEndAt.value instanceof Date
-  && !Number.isNaN(examEndAt.value.getTime())
-  && Date.now() >= examEndAt.value.getTime()
+  serverClock.isExpired(examDeadlineEpochMs.value)
 
 const buildExamRuntime = () => ({
   examId: state.examId || examId,
@@ -1077,7 +1079,11 @@ const ensureExamClientLease = () => {
   return record
 }
 
-const applyLeaseResponse = (payload = {}) => {
+const applyLeaseResponse = (payload = {}, sentAt = null, receivedAt = null) => {
+  if (sentAt != null && receivedAt != null
+    && Number.isFinite(Number(sentAt)) && Number.isFinite(Number(receivedAt))) {
+    serverClock.observe(payload, Number(sentAt), Number(receivedAt))
+  }
   if (!syncState.userId || !payload?.leaseToken) {
     return
   }
@@ -1225,7 +1231,7 @@ const runClientHeartbeat = async () => {
     if (!lease) {
       return true
     }
-    applyLeaseResponse(lease)
+    applyLeaseResponse(lease, startedAt, Date.now())
     const latency = Date.now() - startedAt
     updateNetworkStatus(latency > 2500 ? 'DEGRADED' : 'ONLINE', latency)
     return true
@@ -1269,8 +1275,8 @@ const refreshQueueSize = async () => {
     return 0
   }
   const items = await listSyncItems(syncState.userId, examId)
-  networkState.queueSize = items.length
-  return items.length
+  networkState.queueSize = items.filter((item) => !item.terminal).length
+  return networkState.queueSize
 }
 
 const persistDraftState = async ({
@@ -1278,6 +1284,8 @@ const persistDraftState = async ({
   lastSyncedAt = syncState.lastSyncedAt,
   lastServerAckAt = syncState.lastServerAckAt,
   snapshotVersion = syncState.snapshotVersion,
+  clientSequence = syncState.clientSequence,
+  serverRevision = syncState.serverRevision,
   dirty = true,
   nextPendingSubmitIntent = pendingSubmitIntent.value,
   answersMap = buildAnswerMapFromState(),
@@ -1299,6 +1307,8 @@ const persistDraftState = async ({
       lastSyncedAt: nextLastSyncedAt,
       lastServerAckAt,
       snapshotVersion,
+      clientSequence,
+      serverRevision,
       pendingSubmitIntent: nextPendingSubmitIntent,
       examRuntime,
       dirty
@@ -1307,6 +1317,11 @@ const persistDraftState = async ({
     syncState.lastSyncedAt = nextLastSyncedAt
     syncState.lastServerAckAt = lastServerAckAt
     syncState.snapshotVersion = Number(snapshotVersion || 0)
+    syncState.clientSequence = Math.max(
+      syncState.clientSequence || 0,
+      Number(clientSequence || snapshotVersion || 0)
+    )
+    syncState.serverRevision = Number(serverRevision || 0)
     pendingSubmitIntent.value = nextPendingSubmitIntent
     syncState.dirty = Boolean(dirty)
     syncState.localSavedAt = Date.now()
@@ -1451,11 +1466,16 @@ const retryDelayForAttempt = (attemptCount = 0) => {
   return delays[Math.min(attemptCount, delays.length - 1)]
 }
 
-const buildSnapshotPayload = (snapshotVersion = syncState.updatedAt || Date.now()) => ({
-  ...withClientLeasePayload(buildSubmitPayload()),
-  clientTimestamp: snapshotVersion,
-  snapshotVersion
-})
+const buildSnapshotPayload = () => {
+  const clientSequence = nextClientSequence()
+  return {
+    ...withClientLeasePayload(buildSubmitPayload()),
+    clientTimestamp: Math.floor(serverClock.nowMs()),
+    snapshotVersion: clientSequence,
+    clientSequence,
+    baseServerRevision: syncState.serverRevision || undefined
+  }
+}
 
 const queueSnapshotSync = async (payload) => {
   if (!syncState.userId) {
@@ -1500,9 +1520,10 @@ const flushSyncQueue = async ({ force = false } = {}) => {
     return false
   }
   const items = await listSyncItems(syncState.userId, examId)
-  networkState.queueSize = items.length
+  networkState.queueSize = items.filter((item) => !item.terminal).length
   const now = Date.now()
-  const dueItems = items.filter((item) => force || !item.nextAttemptAt || item.nextAttemptAt <= now)
+  const dueItems = items.filter((item) => !item.terminal
+    && (force || !item.nextAttemptAt || item.nextAttemptAt <= now))
   if (!dueItems.length) {
     return true
   }
@@ -1518,15 +1539,27 @@ const flushSyncQueue = async ({ force = false } = {}) => {
             error.isBusinessError = true
             throw error
           }
+          const startedAt = Date.now()
           const ack = await runLeaseRequest(() => snapshotApi(
             examId,
             withClientLeasePayload(item.payload),
             { silent: true, timeout: 10000 }
           ))
-          applyLeaseResponse(ack)
-          syncState.lastSyncedAt = Math.max(Number(syncState.lastSyncedAt || 0), Number(item.payload?.snapshotVersion || item.occurredAt || 0))
-          syncState.lastServerAckAt = ack?.serverReceivedAt || syncState.lastServerAckAt
-          syncState.snapshotVersion = Math.max(syncState.snapshotVersion || 0, Number(ack?.snapshotVersion || item.payload?.snapshotVersion || 0))
+          applyLeaseResponse(ack, startedAt, Date.now())
+          if (!observeSnapshotAck(ack, item.payload?.clientSequence || item.payload?.snapshotVersion)) {
+            item.payload = {
+              ...item.payload,
+              baseServerRevision: Number(ack?.serverRevision || 0) || undefined
+            }
+            item.lastError = '服务器草稿版本已更新，等待按最新版本重试'
+            item.nextAttemptAt = Date.now() + retryDelayForAttempt(item.attemptCount)
+            await updateSyncItem(item)
+            break
+          }
+          syncState.lastSyncedAt = Math.max(
+            Number(syncState.lastSyncedAt || 0),
+            Number(item.occurredAt || item.payload?.clientTimestamp || 0)
+          )
         } else if (item.type === 'ANTI_CHEAT') {
           const originalPayload = item.payload?.payload
           let parsedPayload = {}
@@ -1555,7 +1588,24 @@ const flushSyncQueue = async ({ force = false } = {}) => {
         }
         if (!isRecoverableNetworkError(error)) {
           item.lastError = error?.message || '同步失败'
-          await deleteSyncItem(item.id)
+          if (item.type === 'SNAPSHOT' && error?.code === 'EXAM_SESSION_ENDED') {
+            item.terminal = true
+            item.failureCode = error.code
+            item.nextAttemptAt = null
+            item.evidenceExpiresAt = Date.now() + OFFLINE_EVIDENCE_RETENTION_MS
+            await saveSubmissionEvidence({
+              userId: syncState.userId,
+              examId,
+              answers: item.payload?.answers || buildAnswerMapFromState(),
+              snapshotVersion: item.payload?.clientSequence || item.payload?.snapshotVersion,
+              serverRevision: syncState.serverRevision,
+              failureCode: error.code,
+              expiresAt: item.evidenceExpiresAt
+            })
+            await updateSyncItem(item)
+          } else {
+            await deleteSyncItem(item.id)
+          }
           syncState.syncErrorAt = Date.now()
           syncState.lastSyncErrorMessage = item.lastError
           break
@@ -1604,7 +1654,7 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
   syncState.syncErrorAt = null
   syncState.lastSyncErrorMessage = ''
   const syncVersion = Math.max(syncState.updatedAt || 0, (syncState.snapshotVersion || 0) + 1, Date.now())
-  const payload = withoutClientLeasePayload(buildSnapshotPayload(syncVersion))
+  const payload = withoutClientLeasePayload(buildSnapshotPayload())
   const validationError = answerPayloadValidationError(payload)
   if (validationError) {
     syncState.syncErrorAt = Date.now()
@@ -1622,9 +1672,23 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
       withClientLeasePayload(payload),
       { silent: true, timeout: 10000 }
     ))
-    applyLeaseResponse(ack)
+    applyLeaseResponse(ack, startedAt, Date.now())
     const latency = Date.now() - startedAt
     updateNetworkStatus(latency > 2500 ? 'DEGRADED' : 'ONLINE', latency)
+
+    if (!observeSnapshotAck(ack, syncVersion)) {
+      await persistDraftState({
+        serverRevision: syncState.serverRevision,
+        dirty: true
+      })
+      syncState.lastSyncErrorMessage = '服务器草稿版本已更新，正在按最新版本重新同步'
+      await queueSnapshotSync({
+        ...payload,
+        baseServerRevision: syncState.serverRevision
+      })
+      scheduleQueueFlush(retryDelayForAttempt(0))
+      return false
+    }
 
     const latestUpdatedAt = syncState.updatedAt || syncVersion
     await persistDraftState({
@@ -1632,6 +1696,7 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
       lastSyncedAt: syncVersion,
       lastServerAckAt: ack?.serverReceivedAt || null,
       snapshotVersion: Number(ack?.snapshotVersion || syncVersion),
+      serverRevision: syncState.serverRevision,
       dirty: latestUpdatedAt > syncVersion
     })
     await flushSyncQueue({ force: true })
@@ -1660,22 +1725,39 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
-const pollSubmissionStatus = async () => {
+const requestSubmissionStatus = async (stopAt) => {
+  const remaining = Math.max(500, stopAt - Date.now())
+  const requestStartedAt = Date.now()
+  const status = await submissionStatusApi(examId, {
+    silent: true,
+    timeout: Math.min(5000, remaining)
+  })
+  serverClock.observe(status, requestStartedAt, Date.now())
+  if (status?.timeoutTaskStatus === 'FAILED') {
+    await preserveLocalSubmissionEvidence(status)
+    const incident = status?.incidentId ? `，事件号 ${status.incidentId}` : ''
+    const failure = new Error(`自动交卷任务处理失败${incident}，本地答案将保留 7 天供申诉。`)
+    failure.code = status?.failureCode || 'TIMEOUT_SUBMISSION_FAILED'
+    failure.incidentId = status?.incidentId || null
+    throw failure
+  }
+  return status
+}
+
+const pollSubmissionStatus = async ({
+  stopAt = Date.now() + SUBMISSION_CONFIRMATION_TIMEOUT_MS,
+  attempt = 0
+} = {}) => {
   let lastError = null
-  const stopAt = Date.now() + 45_000
-  let attempt = 0
   while (Date.now() < stopAt) {
     attempt += 1
+    submissionProgressText.value = `正在确认服务器交卷状态（第 ${attempt} 次）…`
+    const jitteredDelay = submissionPollDelay(attempt)
+    await wait(Math.min(jitteredDelay, Math.max(0, stopAt - Date.now())))
+    if (Date.now() >= stopAt) break
     try {
-      const remaining = Math.max(500, stopAt - Date.now())
-      const status = await submissionStatusApi(examId, {
-        silent: true,
-        timeout: Math.min(5000, remaining)
-      })
-      if (status?.timeoutTaskStatus === 'FAILED') {
-        throw new Error('自动交卷任务暂时处理失败，系统已记录并会由管理员处理。')
-      }
-      if (isSubmissionAccepted(status)) {
+      const status = await requestSubmissionStatus(stopAt)
+      if (isRuntimeFinalized(status)) {
         return status
       }
     } catch (error) {
@@ -1684,11 +1766,15 @@ const pollSubmissionStatus = async () => {
         throw error
       }
     }
-    submissionProgressText.value = `正在确认服务器交卷状态（第 ${attempt} 次）…`
-    const jitteredDelay = submissionPollDelay(attempt)
-    await wait(Math.min(jitteredDelay, Math.max(0, stopAt - Date.now())))
   }
   throw lastError || new Error('暂时无法确认交卷状态')
+}
+
+const probeDeadlineSubmissionStatus = async (stopAt) => {
+  submissionProgressText.value = '考试已截止，正在等待服务器自动接管。'
+  await wait(Math.min(submissionPollDelay(1), Math.max(0, stopAt - Date.now())))
+  if (Date.now() >= stopAt) return null
+  return requestSubmissionStatus(stopAt)
 }
 
 const runEntryRequest = async (request, phase) => {
@@ -1696,7 +1782,10 @@ const runEntryRequest = async (request, phase) => {
   let attempt = 0
   while (true) {
     try {
-      return await request()
+      const requestStartedAt = Date.now()
+      const response = await request()
+      serverClock.observe(response, requestStartedAt, Date.now())
+      return response
     } catch (error) {
       if (!isRetryableEntryError(error)) throw error
       const elapsed = Date.now() - startedAt
@@ -1735,7 +1824,10 @@ const handleTerminalEntryState = async (status) => {
   endingExam.value = true
   entryPreparing.value = false
   submissionProgressText.value = '服务器已接管本场考试，正在确认交卷状态。'
-  const current = await submissionStatusApi(examId, { silent: true, timeout: 5000 })
+  let current = await submissionStatusApi(examId, { silent: true, timeout: 5000 })
+  if (!isRuntimeFinalized(current)) {
+    current = await pollSubmissionStatus()
+  }
   await completeSubmissionUi(current)
   return true
 }
@@ -1786,6 +1878,8 @@ const enterExamV2 = async (clientLease) => {
     startTime: activated?.startTime,
     endTime: activated?.endTime,
     deadlineTime: activated?.deadlineTime,
+    serverEpochMs: activated?.serverEpochMs,
+    deadlineEpochMs: activated?.deadlineEpochMs,
     resumed: Boolean(activated?.resumed),
     leaseToken: activated?.leaseToken,
     leaseExpiresAt: activated?.leaseExpiresAt,
@@ -1794,7 +1888,27 @@ const enterExamV2 = async (clientLease) => {
   }
 }
 
+const preserveLocalSubmissionEvidence = async (result = {}) => {
+  if (!syncState.userId
+    || (!syncState.dirty && !pendingSubmitIntent.value && !result?.failureCode)) return
+  await saveSubmissionEvidence({
+    userId: syncState.userId,
+    examId,
+    answers: buildAnswerMapFromState(),
+    snapshotVersion: syncState.snapshotVersion,
+    serverRevision: syncState.serverRevision,
+    failureCode: result?.failureCode || (isExamExpiredLocally() ? 'LOCAL_ANSWER_AFTER_DEADLINE' : null),
+    incidentId: result?.incidentId || null,
+    attemptedAt: pendingSubmitIntent.value?.attemptedAt || Date.now(),
+    expiresAt: Date.now() + OFFLINE_EVIDENCE_RETENTION_MS
+  })
+}
+
 const completeSubmissionUi = async (result = {}) => {
+  if (!isRuntimeFinalized(result)) {
+    throw new Error('Runtime 尚未完成交卷，不能清理本地答案。')
+  }
+  await preserveLocalSubmissionEvidence(result)
   allowLeaveExam.value = true
   stopExamRuntimeTimers()
   if (draftSaveTimer) {
@@ -1810,9 +1924,12 @@ const completeSubmissionUi = async (result = {}) => {
   cameraProctoring.stop()
   await exitFullscreenForExamEnd()
   const status = String(result?.status || result?.sessionStatus || '').toUpperCase()
-  ElMessage.success(status === 'SUBMITTING' || status === 'AUTO_SUBMITTING'
+  const receipt = result?.finalSnapshotVersion
+    ? ` 最终快照版本 ${result.finalSnapshotVersion}${result?.finalizedAt ? `，Runtime 完成于 ${result.finalizedAt}` : ''}。`
+    : ''
+  ElMessage.success((status === 'SUBMITTING' || status === 'AUTO_SUBMITTING'
     ? '交卷请求已由服务器接管，完成后会自动进入判分。'
-    : '试卷已提交，系统正在处理成绩。')
+    : '试卷已提交，系统正在处理成绩。') + receipt)
   await router.replace('/student/results')
 }
 
@@ -1829,7 +1946,7 @@ const waitForOfflineDeadlineConfirmation = async () => {
     dirty: true,
     nextPendingSubmitIntent: pendingSubmitIntent.value
   })
-  ElMessage.warning('当前网络不可用，本地答案已保留；恢复网络后将由服务器确认交卷。')
+  ElMessage.warning('当前网络不可用，本地答案已保留；是否计入以截止前服务器已接收版本为准。')
 }
 
 const submit = async (needConfirm = true) => {
@@ -1884,31 +2001,44 @@ const submit = async (needConfirm = true) => {
     ? '考试已截止，正在通知服务器接管自动交卷。'
     : '正在提交最终答案，请勿重复操作。'
   submissionPromise = (async () => {
+    let handoffAccepted = false
     try {
       let result
-      try {
-        const submitPayload = submissionPlan.stripAnswers
-          ? withClientLeasePayload({ answers: [] })
-          : withClientLeasePayload(buildSubmitPayload())
-        const request = () => submitExamApi(
-          examId,
-          submitPayload,
-          { silent: true, timeout: 10000 }
-        )
+      let pollAttempt = 0
+      const confirmationStopAt = Date.now() + SUBMISSION_CONFIRMATION_TIMEOUT_MS
+      if (submissionPlan.mode === 'SERVER_DEADLINE_HANDOFF') {
         try {
-          result = submissionPlan.mode === 'ACTIVE_SUBMIT'
-            ? await runLeaseRequest(request)
-            : await request()
+          result = await probeDeadlineSubmissionStatus(confirmationStopAt)
+          pollAttempt = 1
         } catch (error) {
-          if (!shouldRetryDeadlineWithAnswers(submissionPlan, error)) {
-            throw error
-          }
-          submissionProgressText.value = '服务端尚未截止，正在提交当前完整答案。'
-          result = await runLeaseRequest(() => submitExamApi(
+          if (!isRecoverableNetworkError(error)) throw error
+        }
+      }
+      try {
+        if (submissionPlan.mode === 'ACTIVE_SUBMIT' || shouldRequestDeadlineHandoff(result)) {
+          const submitPayload = submissionPlan.stripAnswers
+            ? withClientLeasePayload({ answers: [] })
+            : withClientLeasePayload(buildSubmitPayload())
+          const request = () => submitExamApi(
             examId,
-            withClientLeasePayload(buildSubmitPayload()),
+            submitPayload,
             { silent: true, timeout: 10000 }
-          ))
+          )
+          try {
+            result = submissionPlan.mode === 'ACTIVE_SUBMIT'
+              ? await runLeaseRequest(request)
+              : await request()
+          } catch (error) {
+            if (!shouldRetryDeadlineWithAnswers(submissionPlan, error)) {
+              throw error
+            }
+            submissionProgressText.value = '服务端尚未截止，正在提交当前完整答案。'
+            result = await runLeaseRequest(() => submitExamApi(
+              examId,
+              withClientLeasePayload(buildSubmitPayload()),
+              { silent: true, timeout: 10000 }
+            ))
+          }
         }
       } catch (error) {
         if (await handleExamClientLeaseError(error)) {
@@ -1920,13 +2050,26 @@ const submit = async (needConfirm = true) => {
         submissionProgressText.value = '交卷请求结果暂时不确定，正在查询服务器权威状态。'
         result = await pollSubmissionStatus()
       }
-      if (!isSubmissionAccepted(result)) {
-        submissionProgressText.value = '服务器正在接管交卷，正在确认最终状态。'
-        result = await pollSubmissionStatus()
+      handoffAccepted = isSubmissionHandoffAccepted(result)
+      if (!isRuntimeFinalized(result)) {
+        submissionProgressText.value = handoffAccepted
+          ? '服务器已接管交卷，正在等待最终事务完成。'
+          : '交卷状态暂不明确，正在查询服务器权威状态。'
+        result = await pollSubmissionStatus({ stopAt: confirmationStopAt, attempt: pollAttempt })
+      }
+      if (result?.finalSnapshotVersion == null) {
+        try {
+          const requestStartedAt = Date.now()
+          const receipt = await submissionStatusApi(examId, { silent: true, timeout: 5000 })
+          serverClock.observe(receipt, requestStartedAt, Date.now())
+          if (isRuntimeFinalized(receipt)) result = receipt
+        } catch {
+          // Receipt enrichment is best effort after Runtime has already committed the submission.
+        }
       }
       await completeSubmissionUi(result)
     } catch (error) {
-      if (deadlineReached) {
+      if (deadlineReached || handoffAccepted) {
         endingExam.value = false
         pendingSubmitIntent.value = { attemptedAt: Date.now() }
         await persistDraftState({
@@ -1935,7 +2078,9 @@ const submit = async (needConfirm = true) => {
           dirty: true,
           nextPendingSubmitIntent: pendingSubmitIntent.value
         })
-        submissionProgressText.value = '暂时无法确认服务端交卷状态，请保持页面并重试。'
+        submissionProgressText.value = handoffAccepted
+          ? '服务器仍在处理交卷，本地答案已保留；是否计入以服务器接收版本为准。'
+          : '暂时无法确认服务端交卷状态，请保持页面并重试。'
         const reason = error?.message ? `${error.message}；` : ''
         ElMessage.warning(`${reason}本地答案已保留，请保持页面并重试。`)
         return
@@ -2124,6 +2269,7 @@ const onPopState = (event) => {
 }
 
 const bootstrapExam = async () => {
+  await purgeExpiredSubmissionEvidence()
   syncState.userId = auth.userId == null ? null : String(auth.userId)
   syncState.initialized = false
   const clientLease = ensureExamClientLease()
@@ -2145,6 +2291,12 @@ const bootstrapExam = async () => {
     return
   }
   const localDraft = syncState.userId ? await loadDraft(syncState.userId, examId) : null
+  const startLegacyExam = async () => {
+    const startedAt = Date.now()
+    const response = await startExamApi(examId, buildClientLeasePayload())
+    applyLeaseResponse(response, startedAt, Date.now())
+    return response
+  }
   let data = null
   try {
     if (EXAM_ENTRY_V2_CLIENT_ENABLED) {
@@ -2154,10 +2306,10 @@ const bootstrapExam = async () => {
       } catch (error) {
         if (!shouldFallbackToLegacyEntry(error)) throw error
         entryProgressText.value = '新版入场尚未开启，正在切换兼容入口。'
-        data = await startExamApi(examId, buildClientLeasePayload())
+        data = await startLegacyExam()
       }
     } else {
-      data = await startExamApi(examId, buildClientLeasePayload())
+      data = await startLegacyExam()
     }
     applyLeaseResponse(data)
   } catch (error) {
@@ -2172,7 +2324,8 @@ const bootstrapExam = async () => {
     }
     const runtime = localDraft?.examRuntime
     const localExamEndAt = parseDateTime(runtime?.examEndAt || runtime?.deadlineTime)
-    if (!runtime?.questions?.length || !localExamEndAt || Date.now() >= localExamEndAt.getTime()) {
+    if (!runtime?.questions?.length || !localExamEndAt
+      || serverClock.nowMs() >= localExamEndAt.getTime()) {
       throw error
     }
     data = {
@@ -2193,6 +2346,7 @@ const bootstrapExam = async () => {
   state.questions = Array.isArray(data?.questions) ? data.questions : []
   state.proctoringPolicy = normalizePolicy(data?.proctoringPolicy)
   examEndAt.value = resolveExamEndTime(data)
+  examDeadlineEpochMs.value = responseDeadlineEpochMs(data, examEndAt.value)
   resetBanner()
 
   const serverAnswerMap = buildAnswerMapFromQuestions(state.questions)
@@ -2207,7 +2361,11 @@ const bootstrapExam = async () => {
   let selectedMarkedQuestionIds = []
 
   pendingSubmitIntent.value = localDraft?.pendingSubmitIntent || null
-  syncState.snapshotVersion = Number(localDraft?.snapshotVersion || 0)
+  restoreSnapshotRevision({
+    snapshotVersion: localDraft?.snapshotVersion || 0,
+    clientSequence: localDraft?.clientSequence || 0,
+    serverRevision: localDraft?.serverRevision || data?.serverRevision || 0
+  })
   syncState.lastServerAckAt = localDraft?.lastServerAckAt || null
 
   if (data?.offlineRecovered && localDraft) {
