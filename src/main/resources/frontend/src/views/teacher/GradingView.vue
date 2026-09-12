@@ -111,7 +111,13 @@
               row-key="submissionAnswerId"
               @selection-change="handleSelectionChange"
             >
-              <el-table-column type="selection" width="48" />
+              <el-table-column type="selection" width="48" :selectable="(row) => !!leaseTokens[row.submissionAnswerId]" />
+              <el-table-column label="阅卷认领" min-width="260">
+                <template #default="{ row }">
+                  <GradingLease :key="row.submissionAnswerId" :answer-id="row.submissionAnswerId"
+                    @change="updateLease(row.submissionAnswerId, $event)" />
+                </template>
+              </el-table-column>
               <el-table-column prop="studentName" label="学生" width="140" />
               <el-table-column prop="submittedAt" label="提交时间" width="180">
                 <template #default="{ row }">
@@ -120,7 +126,7 @@
               </el-table-column>
               <el-table-column label="学生答案" min-width="360">
                 <template #default="{ row }">
-                  <div class="answer-text">{{ row.answerText || '未作答' }}</div>
+                  <div class="answer-text">{{ leaseTokens[row.submissionAnswerId] ? (row.answerText || '未作答') : '请先认领后查看答案' }}</div>
                 </template>
               </el-table-column>
             </el-table>
@@ -192,6 +198,8 @@
                   <span class="answer-id">#{{ answer.submissionAnswerId }}</span>
                 </div>
 
+                <GradingLease :answer-id="answer.submissionAnswerId"
+                  @change="updateLease(answer.submissionAnswerId, $event)" />
                 <div class="student-answer-grid">
                   <div class="student-answer-block student-answer-block--wide">
                     <div class="info-label">题目</div>
@@ -199,7 +207,7 @@
                   </div>
                   <div class="student-answer-block student-answer-block--wide">
                     <div class="info-label">学生答案</div>
-                    <div class="info-content multiline">{{ answer.answerText || '未作答' }}</div>
+                    <div class="info-content multiline">{{ leaseTokens[answer.submissionAnswerId] ? (answer.answerText || '未作答') : '请先认领后查看答案' }}</div>
                   </div>
                   <div class="student-answer-block">
                     <div class="info-label">参考答案</div>
@@ -214,6 +222,7 @@
                 <div class="student-score-row">
                   <el-input-number
                     v-model="studentScoreForm[answer.submissionAnswerId].score"
+                    :disabled="!leaseTokens[answer.submissionAnswerId]"
                     :min="0"
                     :max="resolveStudentMaxScore(answer)"
                     :precision="0"
@@ -222,6 +231,7 @@
                   />
                   <el-input
                     v-model="studentScoreForm[answer.submissionAnswerId].comment"
+                    :disabled="!leaseTokens[answer.submissionAnswerId]"
                     placeholder="可选评语"
                     clearable
                     maxlength="255"
@@ -233,7 +243,7 @@
 
             <div class="student-submit-bar">
               <span>共 {{ currentStudent.pendingCount }} 题</span>
-              <el-button type="primary" :loading="submitting" :disabled="!currentStudent" @click="submitCurrentStudentScores">
+              <el-button type="primary" :loading="submitting" :disabled="!currentStudent || !currentStudent.answers.every((a) => leaseTokens[a.submissionAnswerId])" @click="submitCurrentStudentScores">
                 提交该学生
               </el-button>
             </div>
@@ -254,12 +264,21 @@ import {
   gradingQuestionBatchScoreApi,
   gradingScoreApi
 } from '../../api'
+import GradingLease from '../../components/grading/GradingLease.vue'
 import { formatDateTime } from '../../utils/datetime'
 
 const MODE_QUESTION = 'question'
 const MODE_STUDENT = 'student'
 
 const gradingMode = ref(MODE_QUESTION)
+const leaseTokens = ref({})
+const updateLease = (answerId, token) => {
+  if (token) leaseTokens.value[answerId] = token
+  else {
+    delete leaseTokens.value[answerId]
+    selectedAnswerIds.value = selectedAnswerIds.value.filter((id) => id !== answerId)
+  }
+}
 const groups = ref([])
 const answers = ref([])
 const currentGroup = ref(null)
@@ -299,6 +318,7 @@ const canSubmitQuestionScore = computed(() => {
   const score = Number(batchScore.value)
   return currentGroup.value
     && selectedAnswerIds.value.length > 0
+    && selectedAnswerIds.value.every((id) => leaseTokens.value[id])
     && Number.isInteger(score)
     && score >= 0
     && score <= currentMaxScore.value
@@ -558,7 +578,7 @@ const handleStudentChange = async (student) => {
 }
 
 const handleSelectionChange = (selection) => {
-  selectedAnswerIds.value = (selection || []).map((item) => item.submissionAnswerId)
+  selectedAnswerIds.value = (selection || []).map((item) => item.submissionAnswerId).filter((id) => leaseTokens.value[id])
 }
 
 const refreshCurrentQuestion = async () => {
@@ -611,6 +631,7 @@ const isValidScoreForAnswer = (answer) => {
   if (!form || form.score === null || form.score === undefined || form.score === '') {
     return false
   }
+  if (!leaseTokens.value[answer.submissionAnswerId]) return false
   const score = Number(form.score)
   if (!Number.isInteger(score) || score < 0) {
     return false
@@ -647,6 +668,7 @@ const applyScoreToSelected = async () => {
     await gradingQuestionBatchScoreApi(currentGroup.value.questionId, {
       examId: currentGroup.value.examId,
       submissionAnswerIds: selectedAnswerIds.value,
+      leaseTokens: Object.fromEntries(selectedAnswerIds.value.map((id) => [id, leaseTokens.value[id]])),
       score: Number(batchScore.value),
       comment: batchComment.value?.trim() || ''
     })
@@ -674,6 +696,7 @@ const submitCurrentStudentScores = async () => {
         const form = studentScoreForm.value[answer.submissionAnswerId]
         return {
           submissionAnswerId: answer.submissionAnswerId,
+          leaseToken: leaseTokens.value[answer.submissionAnswerId],
           score: Number(form.score),
           comment: form.comment?.trim() || ''
         }

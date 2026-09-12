@@ -13,11 +13,13 @@ import com.ekusys.exam.runtime.api.GradingAnswerInput;
 import com.ekusys.exam.runtime.api.GradingSubmissionInput;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 
 @Service
 public class GradingService {
@@ -28,9 +30,60 @@ public class GradingService {
  public List<PendingAnswerView> pendingAnswers(){return jdbc.query("select * from grading_task where status='PENDING' order by submitted_at,id",(rs,n)->PendingAnswerView.builder().submissionId(runtimeSubmission(rs.getLong("grading_submission_id"))).submissionAnswerId(rs.getLong("answer_id")).examId(rs.getLong("exam_id")).examName(rs.getString("exam_name")).studentId(rs.getLong("student_id")).questionId(rs.getLong("question_id")).questionContent(rs.getString("question_content")).answerText(rs.getString("answer_text")).build());}
  public List<PendingQuestionGroupView> pendingQuestionGroups(){return jdbc.query("select exam_id,exam_name,question_id,max(question_content) question_content,max(reference_answer) reference_answer,max(analysis) analysis,max(max_score) max_score,max(sort_order) sort_order,count(*) cnt from grading_task where status='PENDING' group by exam_id,exam_name,question_id order by exam_id,sort_order",(rs,n)->PendingQuestionGroupView.builder().examId(rs.getLong("exam_id")).examName(rs.getString("exam_name")).questionId(rs.getLong("question_id")).questionContent(rs.getString("question_content")).referenceAnswer(rs.getString("reference_answer")).analysis(rs.getString("analysis")).defaultScore(rs.getInt("max_score")).sortOrder(rs.getInt("sort_order")).pendingCount(rs.getInt("cnt")).build());}
  public List<PendingQuestionAnswerView> pendingQuestionAnswers(Long questionId,Long examId){return jdbc.query("select * from grading_task where status='PENDING' and question_id=? and exam_id=? order by submitted_at,id",(rs,n)->PendingQuestionAnswerView.builder().submissionId(runtimeSubmission(rs.getLong("grading_submission_id"))).submissionAnswerId(rs.getLong("answer_id")).studentId(rs.getLong("student_id")).answerText(rs.getString("answer_text")).submittedAt(rs.getObject("submitted_at",java.time.LocalDateTime.class)).build(),questionId,examId);}
- @Transactional public void scoreSubjective(Long submissionId,SubjectiveScoreRequest request){for(SubjectiveScoreItem item:request.getScores())score(item.getSubmissionAnswerId(),item.getScore(),item.getComment(),submissionId);recalculate(submissionId);}
- @Transactional public void scoreQuestionAnswers(Long questionId,QuestionBatchScoreRequest request){for(Long answerId:request.getSubmissionAnswerIds()){Long submissionId=jdbc.queryForObject("select gs.runtime_submission_id from grading_task t join grading_submission gs on gs.id=t.grading_submission_id where t.answer_id=? and t.question_id=?",Long.class,answerId,questionId);score(answerId,request.getScore(),request.getComment(),submissionId);recalculate(submissionId);}}
- private void score(Long answerId,int score,String comment,Long submissionId){List<Long> tasks=jdbc.queryForList("select t.id from grading_task t join grading_submission gs on gs.id=t.grading_submission_id where t.answer_id=? and gs.runtime_submission_id=? and t.status='PENDING' and ?<=t.max_score",Long.class,answerId,submissionId,score);if(tasks.isEmpty())throw new BusinessException("评分项无效或分数超限");Long task=tasks.getFirst();jdbc.update("insert into subjective_grade(id,grading_task_id,teacher_id,score,comment,graded_at,create_time,update_time) values(?,?,?,?,?,current_timestamp(3),current_timestamp(3),current_timestamp(3))",IdWorker.getId(),task,SecurityUtils.getCurrentUserId(),score,comment);jdbc.update("update grading_task set status='GRADED',assigned_teacher_id=?,update_time=current_timestamp(3) where id=?",SecurityUtils.getCurrentUserId(),task);}
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void scoreSubjective(Long submissionId, SubjectiveScoreRequest request) {
+        lockSubmission(submissionId);
+        for (SubjectiveScoreItem item : request.getScores()) {
+            score(item.getSubmissionAnswerId(), item.getScore(), item.getComment(), submissionId, item.getLeaseToken());
+        }
+        recalculate(submissionId);
+    }
+
+    // Mapping reads precede the locks; READ_COMMITTED keeps later totals fresh after waiting.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void scoreQuestionAnswers(Long questionId, QuestionBatchScoreRequest request) {
+        // Lock submissions in stable order before reading totals or changing any task.
+        Map<Long, Long> submissions = new TreeMap<>();
+        for (Long answerId : request.getSubmissionAnswerIds()) {
+            List<Long> ids = jdbc.queryForList("""
+                select gs.runtime_submission_id from grading_task t
+                join grading_submission gs on gs.id=t.grading_submission_id
+                where t.answer_id=? and t.question_id=? and t.exam_id=?
+                """, Long.class, answerId, questionId, request.getExamId());
+            if (ids.size() != 1) throw new BusinessException("评分项不属于当前考试或题目");
+            submissions.put(answerId, ids.getFirst());
+        }
+        submissions.values().stream().distinct().sorted().forEach(this::lockSubmission);
+        for (Long answerId : request.getSubmissionAnswerIds()) {
+            score(answerId, request.getScore(), request.getComment(), submissions.get(answerId),
+                request.getLeaseTokens() == null ? null : request.getLeaseTokens().get(answerId));
+        }
+        submissions.values().stream().distinct().sorted().forEach(this::recalculate);
+    }
+
+    private void lockSubmission(Long submissionId) {
+        jdbc.queryForObject("select id from grading_submission where runtime_submission_id=? for update",
+            Long.class, submissionId);
+    }
+
+    private void score(Long answerId, int score, String comment, Long submissionId, String token) {
+        if (token == null || token.isBlank() || SecurityUtils.getCurrentUserId() == null) {
+            throw new BusinessException("请先认领答案再提交评分");
+        }
+        int changed = jdbc.update("""
+            update grading_task t join grading_submission gs on gs.id=t.grading_submission_id
+            set t.status='GRADED', t.lease_token=null, t.lease_expires_at=null, t.update_time=current_timestamp(3)
+            where t.answer_id=? and gs.runtime_submission_id=? and t.status='PENDING'
+                and t.assigned_teacher_id=? and t.lease_token=? and t.lease_expires_at>current_timestamp(3)
+                and ?>=0 and ?<=t.max_score
+            """, answerId, submissionId, SecurityUtils.getCurrentUserId(), token, score, score);
+        if (changed != 1) throw new BusinessException("GRADING_LEASE_CONFLICT", "租约已失效、答案已批阅或分数超限，请刷新后重新认领");
+        Long task = jdbc.queryForObject("select id from grading_task where answer_id=?", Long.class, answerId);
+        jdbc.update("""
+            insert into subjective_grade(id,grading_task_id,teacher_id,score,comment,graded_at,create_time,update_time)
+            values(?,?,?,?,?,current_timestamp(3),current_timestamp(3),current_timestamp(3))
+            """, IdWorker.getId(), task, SecurityUtils.getCurrentUserId(), score, comment);
+    }
  private void recalculate(Long sid){Integer pending=jdbc.queryForObject("select count(*) from grading_task t join grading_submission gs on gs.id=t.grading_submission_id where gs.runtime_submission_id=? and t.status='PENDING'",Integer.class,sid);Integer subjective=jdbc.queryForObject("select coalesce(sum(g.score),0) from subjective_grade g join grading_task t on t.id=g.grading_task_id join grading_submission gs on gs.id=t.grading_submission_id where gs.runtime_submission_id=?",Integer.class,sid);Integer objective=jdbc.queryForObject("select objective_score from grade_result where runtime_submission_id=?",Integer.class,sid);Integer passScore=jdbc.queryForObject("select pass_score from grading_submission where runtime_submission_id=?",Integer.class,sid);String previousStatus=jdbc.queryForObject("select status from grade_result where runtime_submission_id=?",String.class,sid);int total=objective+subjective;String status=pending==0?"GRADED":"PENDING_SUBJECTIVE";jdbc.update("update grade_result set subjective_score=?,total_score=?,pass_flag=?,status=?,completed_at=case when ?='GRADED' then current_timestamp(3) else null end,update_time=current_timestamp(3) where runtime_submission_id=?",subjective,total,total>=passScore?1:0,status,status,sid);jdbc.update("update grading_submission set status=?,update_time=current_timestamp(3) where runtime_submission_id=?",status,sid);if("GRADED".equals(status)&&!"GRADED".equals(previousStatus))outbox.gradeCompleted(sid);}
  private boolean exists(Long id){Integer c=jdbc.queryForObject("select count(*) from grading_submission where runtime_submission_id=?",Integer.class,id);return c!=null&&c>0;}private Long runtimeSubmission(Long gid){return jdbc.queryForObject("select runtime_submission_id from grading_submission where id=?",Long.class,gid);}
 }

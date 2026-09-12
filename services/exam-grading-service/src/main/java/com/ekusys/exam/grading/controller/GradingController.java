@@ -8,6 +8,8 @@ import com.ekusys.exam.grading.dto.PendingQuestionGroupView;
 import com.ekusys.exam.grading.dto.QuestionBatchScoreRequest;
 import com.ekusys.exam.grading.dto.SubjectiveScoreRequest;
 import com.ekusys.exam.grading.service.GradingService;
+import com.ekusys.exam.grading.service.GradingLeaseService;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -25,9 +27,30 @@ import org.springframework.web.bind.annotation.RestController;
 public class GradingController {
 
     private final GradingService gradingService;
+    private final GradingLeaseService leases;
 
-    public GradingController(GradingService gradingService) {
+    public GradingController(GradingService gradingService, GradingLeaseService leases) {
+        this.leases = leases;
         this.gradingService = gradingService;
+    }
+
+    public record LeaseRequest(@NotBlank String token) {}
+
+    @PostMapping("/answers/{answerId}/claim")
+    public ApiResponse<GradingLeaseService.Lease> claim(@PathVariable Long answerId) {
+        return ApiResponse.ok(leases.claim(answerId));
+    }
+
+    @PostMapping("/answers/{answerId}/renew")
+    public ApiResponse<GradingLeaseService.Lease> renew(
+            @PathVariable Long answerId, @Valid @RequestBody LeaseRequest request) {
+        return ApiResponse.ok(leases.renew(answerId, request.token()));
+    }
+
+    @PostMapping("/answers/{answerId}/release")
+    public ApiResponse<Void> release(@PathVariable Long answerId, @Valid @RequestBody LeaseRequest request) {
+        leases.release(answerId, request.token());
+        return ApiResponse.ok(null);
     }
 
     @GetMapping("/pending")

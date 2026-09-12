@@ -110,3 +110,7 @@ export const teacherClassRemoveStudentApi = (classId, studentId) =>
   http.delete(`/teacher/classes/${classId}/students/${studentId}`)
 export const teacherClassStudentCandidatesApi = (classId, data) =>
   http.post(`/teacher/classes/${classId}/student-candidates/query`, data)
+
+export const gradingClaimApi = (answerId) => http.post(`/grading/answers/${answerId}/claim`)
+export const gradingRenewApi = (answerId, token) => http.post(`/grading/answers/${answerId}/renew`, { token })
+export const gradingReleaseApi = (answerId, token) => http.post(`/grading/answers/${answerId}/release`, { token })

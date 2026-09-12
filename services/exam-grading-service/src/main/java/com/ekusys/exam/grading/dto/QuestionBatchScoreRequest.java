@@ -5,6 +5,8 @@ import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.util.List;
+import java.util.Map;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
 @Data
@@ -12,6 +14,9 @@ public class QuestionBatchScoreRequest {
 
     @NotNull
     private Long examId;
+
+    @NotEmpty
+    private Map<Long, @NotBlank String> leaseTokens;
 
     @NotEmpty
     private List<Long> submissionAnswerIds;
