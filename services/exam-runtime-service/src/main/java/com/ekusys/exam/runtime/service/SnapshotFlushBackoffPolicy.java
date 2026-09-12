@@ -3,7 +3,6 @@ package com.ekusys.exam.runtime.service;
 import com.ekusys.exam.runtime.config.SnapshotProperties;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.DoubleSupplier;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -11,7 +10,6 @@ public class SnapshotFlushBackoffPolicy {
     private final SnapshotProperties properties;
     private final DoubleSupplier random;
 
-    @Autowired
     public SnapshotFlushBackoffPolicy(SnapshotProperties properties) {
         this(properties, () -> ThreadLocalRandom.current().nextDouble());
     }

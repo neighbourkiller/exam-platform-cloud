@@ -18,6 +18,7 @@ public class ExamTimeoutSubmitJob {
         int shardIndex = XxlJobHelper.getShardIndex();
         int shardTotal = Math.max(XxlJobHelper.getShardTotal(), 1);
         int processed = timeoutSubmissionService.processShard(shardIndex, shardTotal);
-        XxlJobHelper.log("timeout submissions processed={}, shard={}/{}", processed, shardIndex, shardTotal);
+        XxlJobHelper.log("timeout submissions mode={}, processed={}, shard={}/{}",
+            timeoutSubmissionService.mode(), processed, shardIndex, shardTotal);
     }
 }

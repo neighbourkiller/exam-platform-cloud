@@ -94,4 +94,8 @@ public class TimeoutSubmissionService {
     public boolean isV2Enabled() {
         return properties.isEnabled();
     }
+
+    public String mode() {
+        return properties.isEnabled() ? "V2" : "V1";
+    }
 }

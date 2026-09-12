@@ -8,6 +8,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -17,16 +18,21 @@ import com.ekusys.exam.runtime.repository.TimeoutTaskRepository;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.SessionState;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TaskCandidate;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TaskRow;
+import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TimeoutHandoffState;
 import com.ekusys.exam.runtime.service.SubmissionFinalPayloadService.EncodedFinalAnswers;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -38,8 +44,10 @@ class TimeoutSubmissionCoordinatorTest {
     private ExamSnapshotService snapshots;
     private SubmissionFinalPayloadService finalPayloads;
     private RuntimeOutboxService outbox;
+    private SubmissionStatusProjectionService projectionService;
     private JdbcTemplate jdbc;
     private ThreadPoolTaskExecutor executor;
+    private ThreadPoolTaskScheduler leaseScheduler;
     private TimeoutSubmissionCoordinator coordinator;
 
     @BeforeEach
@@ -53,6 +61,7 @@ class TimeoutSubmissionCoordinatorTest {
         snapshots = mock(ExamSnapshotService.class);
         finalPayloads = mock(SubmissionFinalPayloadService.class);
         outbox = mock(RuntimeOutboxService.class);
+        projectionService = mock(SubmissionStatusProjectionService.class);
         jdbc = mock(JdbcTemplate.class);
         PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
         when(transactionManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
@@ -62,15 +71,19 @@ class TimeoutSubmissionCoordinatorTest {
         executor.setMaxPoolSize(1);
         executor.setQueueCapacity(1);
         executor.initialize();
+        leaseScheduler = new ThreadPoolTaskScheduler();
+        leaseScheduler.setPoolSize(1);
+        leaseScheduler.initialize();
         coordinator = new TimeoutSubmissionCoordinator(
             tasks, properties, new TimeoutSubmissionBackoffPolicy(properties), metrics,
-            snapshots, finalPayloads, outbox, jdbc, transactions, executor
+            snapshots, finalPayloads, outbox, projectionService, jdbc, transactions, executor, leaseScheduler
         );
     }
 
     @AfterEach
     void tearDown() {
         executor.shutdown();
+        leaseScheduler.shutdown();
     }
 
     @Test
@@ -82,7 +95,7 @@ class TimeoutSubmissionCoordinatorTest {
         );
         AtomicReference<String> token = new AtomicReference<>();
         when(tasks.lockClaimable(1)).thenReturn(List.of(candidate), List.of());
-        when(tasks.markProcessing(eq(1L), anyString(), eq(60_000L))).thenAnswer(invocation -> {
+        when(tasks.markProcessing(eq(1L), anyString(), eq(30_000L))).thenAnswer(invocation -> {
             token.set(invocation.getArgument(1));
             return 1;
         });
@@ -90,14 +103,14 @@ class TimeoutSubmissionCoordinatorTest {
             new SessionState(1L, 2L, 3L, "ANSWERING", dueAt)
         );
         when(tasks.claimSessionForTimeout(1L)).thenReturn(1);
-        when(snapshots.loadLatestDraft(2L, 3L)).thenReturn(
+        when(snapshots.loadLatestDraft(eq(2L), eq(3L), any())).thenReturn(
             new SnapshotDraft(Map.of(10L, "A"), 1L, now)
         );
         EncodedFinalAnswers encoded = new EncodedFinalAnswers(1L, new byte[] {1}, "hash");
         when(finalPayloads.encode(any(Map.class), eq(1L))).thenReturn(encoded);
         when(tasks.lockById(1L)).thenAnswer(invocation -> new TaskRow(
-            1L, 1L, 2L, 3L, dueAt, "PROCESSING", token.get(),
-            now.minusNanos(1), 1, null
+            1L, 1L, 2L, 3L, null, dueAt, "PROCESSING", token.get(),
+            now.minusNanos(1), 1, null, now
         ));
         when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
             .thenReturn(now);
@@ -108,6 +121,7 @@ class TimeoutSubmissionCoordinatorTest {
         verify(finalPayloads, never()).store(anyLong(), anyString(), any());
         verify(outbox, never()).submissionAccepted(anyLong());
         verify(tasks, never()).markSessionSubmitted(anyLong());
+        verify(tasks, never()).lockSession(anyLong());
         verify(metrics).increment("stale_claim");
     }
 
@@ -131,5 +145,168 @@ class TimeoutSubmissionCoordinatorTest {
         );
         verify(tasks, never()).markProcessing(anyLong(), anyString(), anyLong());
         verify(metrics).increment("attempts_exhausted");
+    }
+
+    @Test
+    void claimCountIsBoundedByWorkerCountEvenWhenBatchIsTwoHundred() {
+        properties.setBatchSize(200);
+        properties.setWorkerCount(8);
+        when(tasks.lockClaimable(8)).thenReturn(List.of());
+
+        assertThat(coordinator.processDue()).isZero();
+
+        verify(tasks).lockClaimable(8);
+    }
+
+    @Test
+    void consecutiveJobsRefreshBacklogOnlyOnceWithinConfiguredInterval() {
+        properties.setBacklogRefreshIntervalMs(10_000L);
+        when(tasks.lockClaimable(1)).thenReturn(List.of());
+
+        assertThat(coordinator.processDue()).isZero();
+        assertThat(coordinator.processDue()).isZero();
+
+        verify(tasks, times(2)).lockClaimable(1);
+        verify(tasks).backlog();
+        verify(tasks).missingTaskCount();
+        verify(tasks).inconsistentStateCount();
+    }
+
+    @Test
+    void alreadyDuePendingTaskIsAcknowledgedWithoutLockingOrRewriting() {
+        LocalDateTime now = LocalDateTime.of(2026, 8, 8, 20, 0);
+        LocalDateTime deadline = now.minusSeconds(1);
+        when(tasks.findHandoffState(1L)).thenReturn(new TimeoutHandoffState(
+            2L, 3L, "ANSWERING", deadline, 1L, "PENDING", deadline, now
+        ));
+
+        assertThat(coordinator.ensureExpiredTask(1L, 2L, 3L, deadline))
+            .isEqualTo("SUBMITTING");
+
+        verify(metrics).increment("handoff_fast_path");
+        verify(tasks, never()).lockBySession(anyLong());
+        verify(tasks, never()).lockSession(anyLong());
+        verify(tasks, never()).expeditePendingLocked(anyLong());
+        verify(tasks, never()).repairTaskFromSession(anyLong());
+    }
+
+    @Test
+    void taskHardBudgetPreventsLateFinalPayloadWrite() {
+        properties.setMaxRunMs(4_000L);
+        properties.setTaskTimeoutMs(1_000L);
+        properties.setLeaseRenewIntervalMs(5_000L);
+        LocalDateTime now = LocalDateTime.of(2026, 8, 8, 20, 0);
+        AtomicReference<String> token = arrangeClaim(now);
+        when(snapshots.loadLatestDraft(eq(2L), eq(3L), any())).thenAnswer(invocation -> {
+            Thread.sleep(1_100L);
+            return new SnapshotDraft(Map.of(10L, "A"), 1L, now);
+        });
+        when(finalPayloads.encode(any(Map.class), eq(1L))).thenReturn(
+            new EncodedFinalAnswers(1L, new byte[] {1}, "hash")
+        );
+        when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
+            .thenReturn(now);
+        when(tasks.markFailure(
+            eq(1L), anyString(), any(), anyInt(), anyString(), anyString(), any()
+        )).thenReturn(1);
+
+        assertThat(coordinator.processDue()).isZero();
+
+        verify(finalPayloads, never()).store(anyLong(), anyString(), any());
+        verify(tasks).markFailure(
+            eq(1L), eq(token.get()), any(), anyInt(), anyString(), anyString(), any()
+        );
+    }
+
+    @Test
+    void failedLeaseRenewalPreventsOldWorkerFromFinalizing() {
+        properties.setMaxRunMs(4_000L);
+        properties.setTaskTimeoutMs(3_000L);
+        properties.setLeaseRenewIntervalMs(1_000L);
+        LocalDateTime now = LocalDateTime.of(2026, 8, 8, 20, 0);
+        AtomicReference<String> token = arrangeClaim(now);
+        when(tasks.renewLease(eq(1L), anyString(), anyLong())).thenReturn(0);
+        when(snapshots.loadLatestDraft(eq(2L), eq(3L), any())).thenAnswer(invocation -> {
+            Thread.sleep(1_150L);
+            return new SnapshotDraft(Map.of(10L, "A"), 1L, now);
+        });
+        when(finalPayloads.encode(any(Map.class), eq(1L))).thenReturn(
+            new EncodedFinalAnswers(1L, new byte[] {1}, "hash")
+        );
+        when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
+            .thenReturn(now);
+        when(tasks.markFailure(
+            eq(1L), anyString(), any(), anyInt(), anyString(), anyString(), any()
+        )).thenReturn(1);
+
+        assertThat(coordinator.processDue()).isZero();
+
+        verify(tasks).renewLease(eq(1L), eq(token.get()), anyLong());
+        verify(finalPayloads, never()).store(anyLong(), anyString(), any());
+    }
+
+    @Test
+    void overlappingJobDoesNotClaimAnotherBatch() throws Exception {
+        properties.setMaxRunMs(4_000L);
+        LocalDateTime now = LocalDateTime.of(2026, 8, 8, 20, 0);
+        arrangeClaim(now);
+        CountDownLatch workerStarted = new CountDownLatch(1);
+        CountDownLatch releaseWorker = new CountDownLatch(1);
+        when(snapshots.loadLatestDraft(eq(2L), eq(3L), any())).thenAnswer(invocation -> {
+            workerStarted.countDown();
+            releaseWorker.await(2, TimeUnit.SECONDS);
+            throw new IllegalStateException("test stop");
+        });
+        when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
+            .thenReturn(now);
+        when(tasks.markFailure(
+            eq(1L), anyString(), any(), anyInt(), anyString(), anyString(), any()
+        )).thenReturn(1);
+
+        CompletableFuture<Integer> firstRun = CompletableFuture.supplyAsync(coordinator::processDue);
+        assertThat(workerStarted.await(1, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(coordinator.processDue()).isZero();
+        verify(metrics).increment("job_overlap");
+
+        releaseWorker.countDown();
+        firstRun.get(2, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void rejectedWorkerImmediatelyReturnsClaimForRetry() {
+        LocalDateTime now = LocalDateTime.of(2026, 8, 8, 20, 0);
+        AtomicReference<String> token = arrangeClaim(now);
+        when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
+            .thenReturn(now);
+        when(tasks.markFailure(
+            eq(1L), anyString(), any(), anyInt(), anyString(), anyString(), any()
+        )).thenReturn(1);
+        executor.shutdown();
+
+        assertThat(coordinator.processDue()).isZero();
+
+        verify(tasks).markFailure(
+            eq(1L), eq(token.get()), any(), anyInt(), anyString(), anyString(), any()
+        );
+        verify(metrics).increment("worker_rejected");
+    }
+
+    private AtomicReference<String> arrangeClaim(LocalDateTime now) {
+        LocalDateTime dueAt = now.minusSeconds(1);
+        TaskCandidate candidate = new TaskCandidate(
+            1L, 1L, 2L, 3L, dueAt, "PENDING", 0, null
+        );
+        AtomicReference<String> token = new AtomicReference<>();
+        when(tasks.lockClaimable(1)).thenReturn(List.of(candidate), List.of());
+        when(tasks.lockSession(1L)).thenReturn(
+            new SessionState(1L, 2L, 3L, "ANSWERING", dueAt)
+        );
+        when(tasks.markProcessing(eq(1L), anyString(), eq(30_000L))).thenAnswer(invocation -> {
+            token.set(invocation.getArgument(1));
+            return 1;
+        });
+        when(tasks.claimSessionForTimeout(1L)).thenReturn(1);
+        return token;
     }
 }

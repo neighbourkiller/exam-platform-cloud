@@ -109,11 +109,55 @@ public class ExamProvisioningService {
                 );
                 jdbc.update(
                     """
+                        insert ignore into submission_timeout_task(
+                            id,session_id,exam_id,student_id,submission_id,due_at,status,created_at,updated_at
+                        )
+                        select s.id,s.id,s.exam_id,s.student_id,sub.id,current_timestamp(3),'PENDING',
+                               current_timestamp(3),current_timestamp(3)
+                          from exam_session s
+                          left join submission sub on sub.exam_id=s.exam_id and sub.student_id=s.student_id
+                         where s.exam_id=? and s.status='ANSWERING'
+                        """,
+                    examId
+                );
+                jdbc.queryForList(
+                    "select id from submission_timeout_task where exam_id=? order by id for update",
+                    Long.class, examId
+                );
+                jdbc.queryForList(
+                    "select id from exam_session where exam_id=? order by id for update",
+                    Long.class, examId
+                );
+                jdbc.update(
+                    """
                         update submission_timeout_task t
                         join exam_session s on s.id=t.session_id
                            set t.status='CANCELLED',t.due_at=null,t.claim_token=null,
                                t.lease_until=null,t.next_retry_at=null,t.updated_at=current_timestamp(3)
                          where s.exam_id=? and s.status='PREPARED' and t.status='WAITING'
+                        """,
+                    examId
+                );
+                jdbc.update(
+                    """
+                        update submission_timeout_task t
+                        join exam_session s on s.id=t.session_id
+                           set t.status=case when t.status='WAITING' then 'PENDING' else t.status end,
+                               t.due_at=least(coalesce(t.due_at,current_timestamp(3)),current_timestamp(3)),
+                               t.next_retry_at=null,t.updated_at=current_timestamp(3)
+                         where s.exam_id=? and s.status='ANSWERING'
+                           and t.status in ('WAITING','PENDING')
+                        """,
+                    examId
+                );
+                jdbc.update(
+                    """
+                        update exam_session
+                           set deadline_time=least(
+                                   coalesce(deadline_time,current_timestamp(3)),current_timestamp(3)
+                               ),
+                               update_time=current_timestamp(3)
+                         where exam_id=? and status='ANSWERING'
                         """,
                     examId
                 );
@@ -214,6 +258,11 @@ public class ExamProvisioningService {
         );
 
         List<PreparedSession> sessions = loadSessions(command.examId(), studentIds);
+        record ProvisionedItem(PreparedSession session, Long submissionId) {}
+        List<ProvisionedItem> items = new ArrayList<>(sessions.size());
+        for (PreparedSession session : sessions) {
+            items.add(new ProvisionedItem(session, IdWorker.getId()));
+        }
         jdbc.batchUpdate(
             """
                 insert ignore into submission(
@@ -221,30 +270,31 @@ public class ExamProvisioningService {
                     draft_version,create_time,update_time
                 ) values(?,?,?,'IN_PROGRESS',?,0,0,current_timestamp(3),current_timestamp(3))
                 """,
-            sessions,
-            sessions.size(),
-            (statement, row) -> {
-                statement.setLong(1, IdWorker.getId());
+            items,
+            items.size(),
+            (statement, item) -> {
+                statement.setLong(1, item.submissionId());
                 statement.setLong(2, command.examId());
-                statement.setLong(3, row.studentId());
+                statement.setLong(3, item.session().studentId());
                 statement.setLong(4, command.paperSnapshotId());
             }
         );
         jdbc.batchUpdate(
             """
                 insert ignore into submission_timeout_task(
-                    id,session_id,exam_id,student_id,due_at,status,created_at,updated_at
-                ) values(?,?,?,?,?,?,current_timestamp(3),current_timestamp(3))
+                    id,session_id,exam_id,student_id,submission_id,due_at,status,created_at,updated_at
+                ) values(?,?,?,?,?,?,?,current_timestamp(3),current_timestamp(3))
                 """,
-            sessions,
-            sessions.size(),
-            (statement, row) -> {
-                statement.setLong(1, row.sessionId());
-                statement.setLong(2, row.sessionId());
+            items,
+            items.size(),
+            (statement, item) -> {
+                statement.setLong(1, item.session().sessionId());
+                statement.setLong(2, item.session().sessionId());
                 statement.setLong(3, command.examId());
-                statement.setLong(4, row.studentId());
-                statement.setObject(5, row.deadline());
-                statement.setString(6, row.active() ? "PENDING" : "WAITING");
+                statement.setLong(4, item.session().studentId());
+                statement.setLong(5, item.submissionId());
+                statement.setObject(6, item.session().deadline());
+                statement.setString(7, item.session().active() ? "PENDING" : "WAITING");
             }
         );
         jdbc.update(

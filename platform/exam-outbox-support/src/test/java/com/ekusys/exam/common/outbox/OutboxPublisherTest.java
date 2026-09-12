@@ -29,11 +29,11 @@ class OutboxPublisherTest {
         }).when(fixture.rabbit).convertAndSend(
             eq("exam.events"), eq("TestEvent"), eq("{}"), any(CorrelationData.class)
         );
-        when(fixture.repository.markPublished(fixture.row)).thenReturn(true);
+        when(fixture.repository.markPublishedBatch(List.of(fixture.row))).thenReturn(1);
 
         fixture.publisher.publishPending();
 
-        verify(fixture.repository).markPublished(fixture.row);
+        verify(fixture.repository).markPublishedBatch(List.of(fixture.row));
         verify(fixture.repository, never()).markFailedAttempt(eq(fixture.row), any());
     }
 
@@ -56,7 +56,7 @@ class OutboxPublisherTest {
         fixture.publisher.publishPending();
 
         verify(fixture.repository).markFailedAttempt(eq(fixture.row), any(IllegalStateException.class));
-        verify(fixture.repository, never()).markPublished(fixture.row);
+        verify(fixture.repository, never()).markPublishedBatch(any());
     }
 
     @Test

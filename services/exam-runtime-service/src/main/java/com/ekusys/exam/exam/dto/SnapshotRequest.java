@@ -29,4 +29,10 @@ public class SnapshotRequest {
 
     @Positive
     private Long snapshotVersion;
+
+    @Positive
+    private Long clientSequence;
+
+    @Positive
+    private Long baseServerRevision;
 }

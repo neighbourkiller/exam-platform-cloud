@@ -16,9 +16,11 @@ import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.SessionState;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TaskRow;
 import com.ekusys.exam.runtime.service.SubmissionFinalPayloadService.EncodedFinalAnswers;
 import java.time.LocalDateTime;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
@@ -29,6 +31,7 @@ class ManualSubmissionServiceTest {
     private SubmissionFinalPayloadService finalPayloads;
     private RuntimeOutboxService outbox;
     private JdbcTemplate jdbc;
+    private TransactionTemplate transactions;
     private ManualSubmissionService service;
     private final LocalDateTime deadline = LocalDateTime.of(2026, 8, 8, 20, 0);
     private final EncodedFinalAnswers encoded = new EncodedFinalAnswers(12L, new byte[] {1}, "abc");
@@ -39,13 +42,14 @@ class ManualSubmissionServiceTest {
         finalPayloads = mock(SubmissionFinalPayloadService.class);
         outbox = mock(RuntimeOutboxService.class);
         jdbc = mock(JdbcTemplate.class);
-        TransactionTemplate transactions = mock(TransactionTemplate.class);
+        transactions = mock(TransactionTemplate.class);
         when(transactions.execute(any())).thenAnswer(invocation -> {
             TransactionCallback<?> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         });
         when(tasks.markDoneLocked(any())).thenReturn(1);
-        service = new ManualSubmissionService(tasks, finalPayloads, outbox, jdbc, transactions);
+        SubmissionStatusProjectionService projectionService = mock(SubmissionStatusProjectionService.class);
+        service = new ManualSubmissionService(tasks, finalPayloads, outbox, projectionService, jdbc, transactions);
     }
 
     @Test
@@ -53,7 +57,7 @@ class ManualSubmissionServiceTest {
         when(tasks.lockBySession(1L)).thenReturn(task("PENDING"));
         when(tasks.lockSession(1L)).thenReturn(session("SUBMITTED"));
 
-        var result = service.submit(1L, 2L, 3L, deadline, 4L, request(), encoded);
+        var result = service.submit(1L, 2L, 3L, 4L, request(), encoded);
 
         assertThat(result.status()).isEqualTo("PROCESSING");
         assertThat(result.completedNow()).isFalse();
@@ -67,7 +71,7 @@ class ManualSubmissionServiceTest {
         when(tasks.lockBySession(1L)).thenReturn(task("PROCESSING"));
         when(tasks.lockSession(1L)).thenReturn(session("AUTO_SUBMITTING"));
 
-        var result = service.submit(1L, 2L, 3L, deadline, 4L, request(), encoded);
+        var result = service.submit(1L, 2L, 3L, 4L, request(), encoded);
 
         assertThat(result.status()).isEqualTo("SUBMITTING");
         verify(finalPayloads, never()).store(any(), anyString(), any());
@@ -83,7 +87,7 @@ class ManualSubmissionServiceTest {
         when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
         when(tasks.markSessionSubmitted(1L)).thenReturn(1);
 
-        var result = service.submit(1L, 2L, 3L, deadline, 4L, request, encoded);
+        var result = service.submit(1L, 2L, 3L, 4L, request, encoded);
 
         assertThat(result.status()).isEqualTo("PROCESSING");
         assertThat(result.completedNow()).isTrue();
@@ -96,6 +100,25 @@ class ManualSubmissionServiceTest {
         order.verify(outbox).submissionAccepted(4L);
         order.verify(tasks).markSessionSubmitted(1L);
         order.verify(tasks).markDoneLocked(1L);
+    }
+
+    @Test
+    void deadlockRetriesTheWholeSubmissionTransaction() {
+        AtomicInteger attempts = new AtomicInteger();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            if (attempts.getAndIncrement() == 0) {
+                throw new CannotAcquireLockException("deadlock");
+            }
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(mock(TransactionStatus.class));
+        }).when(transactions).execute(any());
+        when(tasks.lockBySession(1L)).thenReturn(task("SUBMITTED"));
+        when(tasks.lockSession(1L)).thenReturn(session("SUBMITTED"));
+
+        var result = service.submit(1L, 2L, 3L, 4L, request(), encoded);
+
+        assertThat(result.status()).isEqualTo("PROCESSING");
+        assertThat(attempts).hasValue(2);
     }
 
     private TaskRow task(String status) {

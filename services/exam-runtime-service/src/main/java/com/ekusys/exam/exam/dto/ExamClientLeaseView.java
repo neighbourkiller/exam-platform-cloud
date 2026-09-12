@@ -15,4 +15,8 @@ public class ExamClientLeaseView {
     private Integer heartbeatIntervalSeconds;
 
     private Integer leaseTimeoutSeconds;
+
+    private Long serverEpochMs;
+
+    private Long deadlineEpochMs;
 }

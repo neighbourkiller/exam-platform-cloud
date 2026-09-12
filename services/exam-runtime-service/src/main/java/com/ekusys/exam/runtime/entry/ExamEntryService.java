@@ -22,6 +22,7 @@ import com.ekusys.exam.runtime.entry.ExamActivationTransactionService.Activation
 import com.ekusys.exam.runtime.service.ExamClientLeaseService;
 import com.ekusys.exam.runtime.service.ExamSnapshotService;
 import com.ekusys.exam.runtime.service.SnapshotDraft;
+import com.ekusys.exam.runtime.service.RuntimeTime;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
@@ -138,6 +139,8 @@ public class ExamEntryService {
             .startTime(activated.startTime())
             .endTime(activated.endTime())
             .deadlineTime(activated.deadlineTime())
+            .serverEpochMs(activated.serverEpochMs())
+            .deadlineEpochMs(activated.deadlineEpochMs())
             .draftUpdatedAt(delivered.draftUpdatedAt())
             .leaseToken(activated.leaseToken())
             .leaseExpiresAt(activated.leaseExpiresAt())
@@ -164,7 +167,9 @@ public class ExamEntryService {
         LocalDateTime now = dbNow();
         RuntimeExamDefinition definition = requireReadyDefinition(examId);
         if (definition.terminated()) {
-            return new EntryPrepareView(examId, null, now, null, -1, "TERMINATED");
+            return new EntryPrepareView(
+                examId, null, now, RuntimeTime.epochMillis(now), null, -1, "TERMINATED"
+            );
         }
         RuntimeEntrySession session = definitions.findSession(examId, studentId);
         if (session == null) {
@@ -173,10 +178,14 @@ public class ExamEntryService {
             );
         }
         if (definition.terminated() || "CANCELLED".equals(session.status())) {
-            return new EntryPrepareView(examId, null, now, null, -1, "TERMINATED");
+            return new EntryPrepareView(
+                examId, null, now, RuntimeTime.epochMillis(now), null, -1, "TERMINATED"
+            );
         }
         if (terminal(session.status())) {
-            return new EntryPrepareView(examId, null, now, null, -1, "SUBMITTED");
+            return new EntryPrepareView(
+                examId, null, now, RuntimeTime.epochMillis(now), null, -1, "SUBMITTED"
+            );
         }
         LocalDateTime waitingOpens = definition.startTime()
             .minusMinutes(properties.safeWaitingRoomMinutes());
@@ -202,7 +211,7 @@ public class ExamEntryService {
             metrics.slot(slot);
         }
         return new EntryPrepareView(
-            examId, ticket.token(), now, scheduledAt, slot,
+            examId, ticket.token(), now, RuntimeTime.epochMillis(now), scheduledAt, slot,
             now.isBefore(scheduledAt) ? "WAITING" : "READY"
         );
     }
@@ -253,8 +262,10 @@ public class ExamEntryService {
         );
         return new EntryActivateView(
             examId, result.newlyStarted() ? "STARTED" : "RESUMED", !result.newlyStarted(),
-            result.dbNow(), result.session().startTime(), definition.endTime(),
-            result.session().deadlineTime(), lease.getLeaseToken(), lease.getLeaseExpiresAt(),
+            result.dbNow(), RuntimeTime.epochMillis(result.dbNow()),
+            result.session().startTime(), definition.endTime(), result.session().deadlineTime(),
+            RuntimeTime.epochMillis(result.session().deadlineTime()),
+            lease.getLeaseToken(), lease.getLeaseExpiresAt(),
             lease.getHeartbeatIntervalSeconds(), lease.getLeaseTimeoutSeconds(),
             definition.paperSnapshotVersion()
         );
@@ -353,8 +364,10 @@ public class ExamEntryService {
                                                  LocalDateTime now) {
         String status = "AUTO_SUBMITTING".equals(session.status()) ? "SUBMITTING" : "SUBMITTED";
         return new EntryActivateView(
-            definition.examId(), status, true, now, session.startTime(), definition.endTime(),
-            session.deadlineTime(), null, null, null, null, definition.paperSnapshotVersion()
+            definition.examId(), status, true, now, RuntimeTime.epochMillis(now),
+            session.startTime(), definition.endTime(), session.deadlineTime(),
+            RuntimeTime.nullableEpochMillis(session.deadlineTime()),
+            null, null, null, null, definition.paperSnapshotVersion()
         );
     }
 

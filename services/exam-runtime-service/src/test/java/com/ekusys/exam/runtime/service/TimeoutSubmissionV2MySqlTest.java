@@ -1,6 +1,7 @@
 package com.ekusys.exam.runtime.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 import com.ekusys.exam.common.outbox.OutboxEventWriter;
 import com.ekusys.exam.exam.dto.AnswerPayload;
@@ -90,22 +91,26 @@ class TimeoutSubmissionV2MySqlTest {
         RuntimeOutboxService outbox = new RuntimeOutboxService(
             jdbc, new OutboxEventWriter(jdbc, objectMapper)
         );
+        SubmissionStatusProjectionService projectionService = mock(SubmissionStatusProjectionService.class);
         manualSubmissions = new ManualSubmissionService(
-            tasks, finalPayloads, outbox, jdbc, transactions
+            tasks, finalPayloads, outbox, projectionService, jdbc, transactions
         );
         createSchema();
     }
 
     @Test
     void oneHundredConcurrentManualRetriesCreateOnePayloadAndOneLogicalEvent() {
-        LocalDateTime deadline = LocalDateTime.now().plusMinutes(5);
+        LocalDateTime deadline = jdbc.queryForObject(
+            "select timestampadd(minute,5,current_timestamp(3))",
+            LocalDateTime.class
+        );
         seedSession(1L, 10L, 20L, 30L, deadline);
         SubmitExamRequest request = request();
 
         List<CompletableFuture<ManualSubmissionService.ManualSubmissionResult>> calls =
             IntStream.range(0, 100)
                 .mapToObj(index -> CompletableFuture.supplyAsync(() -> manualSubmissions.submit(
-                    1L, 10L, 20L, deadline, 30L, request,
+                    1L, 10L, 20L, 30L, request,
                     finalPayloads.encode(request.getAnswers(), index)
                 )))
                 .toList();
@@ -130,7 +135,10 @@ class TimeoutSubmissionV2MySqlTest {
 
     @Test
     void twoClaimersUseSkipLockedAndStaleTokenCannotComplete() {
-        LocalDateTime dueAt = LocalDateTime.now().minusSeconds(1);
+        LocalDateTime dueAt = jdbc.queryForObject(
+            "select timestampadd(second,-1,current_timestamp(3))",
+            LocalDateTime.class
+        );
         for (long id = 1; id <= 20; id++) {
             jdbc.update(
                 """
@@ -180,6 +188,43 @@ class TimeoutSubmissionV2MySqlTest {
         assertThat(recovered).isNotNull();
         assertThat(tasks.markDone(expired.getKey(), expired.getValue())).isZero();
         assertThat(tasks.markDone(expired.getKey(), recovered.get(expired.getKey()))).isEqualTo(1);
+    }
+
+    @Test
+    void missingTaskReconciliationOnlyReportsAndDoesNotCreateTask() {
+        LocalDateTime deadline = jdbc.queryForObject(
+            "select timestampadd(minute,5,current_timestamp(3))",
+            LocalDateTime.class
+        );
+        jdbc.update(
+            """
+                insert into exam_session(
+                    id,exam_id,student_id,status,deadline_time,create_time,update_time
+                ) values(1,10,20,'ANSWERING',?,current_timestamp(3),current_timestamp(3))
+                """,
+            deadline
+        );
+
+        assertThat(tasks.missingTaskCount()).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+            "select count(*) from submission_timeout_task", Integer.class
+        )).isZero();
+    }
+
+    @Test
+    void dueTaskCanBeAcknowledgedFromOneDatabaseTimeSnapshot() {
+        LocalDateTime deadline = jdbc.queryForObject(
+            "select timestampadd(second,-1,current_timestamp(3))",
+            LocalDateTime.class
+        );
+        seedSession(1L, 10L, 20L, 30L, deadline);
+
+        TimeoutTaskRepository.TimeoutHandoffState state = tasks.findHandoffState(1L);
+
+        assertThat(state).isNotNull();
+        assertThat(state.isDurablyDue(10L, 20L)).isTrue();
+        assertThat(state.sessionStatus()).isEqualTo("ANSWERING");
+        assertThat(state.taskStatus()).isEqualTo("PENDING");
     }
 
     private CompletableFuture<Map<Long, String>> claimTen(String token, CyclicBarrier barrier) {
@@ -258,11 +303,21 @@ class TimeoutSubmissionV2MySqlTest {
         jdbc.execute("""
             create table submission_timeout_task(
                 id bigint primary key,session_id bigint not null,exam_id bigint not null,
-                student_id bigint not null,due_at datetime(3) not null,status varchar(16) not null,
+                student_id bigint not null,submission_id bigint null,due_at datetime(3) not null,
+                status varchar(16) not null,
                 claim_token varchar(36),lease_until datetime(3),attempt_count int not null default 0,
                 next_retry_at datetime(3),last_error varchar(1000),created_at datetime(3),
-                updated_at datetime(3),completed_at datetime(3),unique key uk_task_session(session_id),
-                key idx_due(status,due_at,next_retry_at,id),key idx_lease(status,lease_until,id)
+                updated_at datetime(3),completed_at datetime(3),
+                available_at datetime(3) generated always as (
+                    case
+                        when due_at is null then null
+                        when next_retry_at is null or next_retry_at < due_at then due_at
+                        else next_retry_at
+                    end
+                ) stored,
+                unique key uk_task_session(session_id),
+                key idx_due(status,due_at,next_retry_at,id),
+                key idx_timeout_task_claim(status,available_at,id),key idx_lease(status,lease_until,id)
             )
             """);
         jdbc.execute("""

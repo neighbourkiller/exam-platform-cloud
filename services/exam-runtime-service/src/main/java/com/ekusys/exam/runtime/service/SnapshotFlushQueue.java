@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.LongSupplier;
-import org.springframework.beans.factory.annotation.Autowired;
+
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -324,7 +324,6 @@ public class SnapshotFlushQueue {
     /** 本工作节点实例唯一标识，用于生成独一无二的认领租约 Token */
     private final String workerId = UUID.randomUUID().toString();
 
-    @Autowired
     public SnapshotFlushQueue(StringRedisTemplate redis, SnapshotProperties properties) {
         this(redis, properties, System::currentTimeMillis);
     }

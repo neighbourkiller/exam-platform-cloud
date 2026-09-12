@@ -126,6 +126,44 @@ class ExamProvisioningServiceMySqlTest {
     }
 
     @Test
+    void terminationAcceleratesAnsweringSessionIntoNormalTimeoutPipeline() {
+        provisioning.provision(command(
+            "9f15455f-091c-472c-bf26-54b720217880", 44L, List.of(101L)
+        ));
+        jdbc.update(
+            """
+                update exam_session
+                   set status='ANSWERING',start_time=current_timestamp(3),
+                       deadline_time=timestampadd(hour,1,current_timestamp(3))
+                 where exam_id=44 and student_id=101
+                """
+        );
+        jdbc.update(
+            "update submission_timeout_task set status='PENDING',due_at=timestampadd(hour,1,current_timestamp(3)) where exam_id=44"
+        );
+
+        provisioning.terminate("8c30f7ee-80e5-4a12-a50f-f835199bbb06", 1, 44L);
+
+        assertThat(jdbc.queryForObject(
+            "select status from exam_session where exam_id=44 and student_id=101", String.class
+        )).isEqualTo("ANSWERING");
+        assertThat(jdbc.queryForObject(
+            "select deadline_time<=current_timestamp(3) from exam_session where exam_id=44 and student_id=101",
+            Boolean.class
+        )).isTrue();
+        assertThat(jdbc.queryForObject(
+            "select status from submission_timeout_task where exam_id=44 and student_id=101", String.class
+        )).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject(
+            "select due_at<=current_timestamp(3) from submission_timeout_task where exam_id=44 and student_id=101",
+            Boolean.class
+        )).isTrue();
+        assertThat(jdbc.queryForObject(
+            "select status from submission where exam_id=44 and student_id=101", String.class
+        )).isEqualTo("IN_PROGRESS");
+    }
+
+    @Test
     void paperPrewarmFailureKeepsExamUnavailableAndDoesNotAcknowledgeInbox() {
         doThrow(new IllegalStateException("content unavailable")).when(paperCache).prewarm(99L);
         ExamProvisioningCommand command = command(

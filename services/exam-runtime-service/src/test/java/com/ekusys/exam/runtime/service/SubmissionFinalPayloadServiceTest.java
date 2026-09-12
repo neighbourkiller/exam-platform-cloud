@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.ResultSet;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -91,5 +92,25 @@ class SubmissionFinalPayloadServiceTest {
         assertThat(decoded.getFirst().answerText()).hasSize(2_000);
         assertThat(decoded.getLast().answerText()).hasSize(2_000);
         assertThat(encoded.sha256()).hasSize(64);
+    }
+
+    @Test
+    void storesKnownFinalizationTimeWithoutReadingItBack() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        SubmissionFinalPayloadService service = new SubmissionFinalPayloadService(
+            jdbc, new ObjectMapper().findAndRegisterModules()
+        );
+        var encoded = service.encode(Map.of(10L, "A"), 12L);
+        LocalDateTime finalizedAt = LocalDateTime.of(2026, 9, 12, 12, 0);
+        when(jdbc.update(contains("values(?,?,?,?,?,?,?,current_timestamp(3))"), any(Object[].class)))
+            .thenReturn(1);
+
+        service.store(99L, "TIMEOUT", encoded, finalizedAt);
+
+        ArgumentCaptor<Object[]> stored = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbc).update(
+            contains("values(?,?,?,?,?,?,?,current_timestamp(3))"), stored.capture()
+        );
+        assertThat(stored.getValue()[6]).isEqualTo(finalizedAt);
     }
 }

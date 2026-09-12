@@ -13,4 +13,7 @@ public class SubmitResultView {
     private Integer totalScore;
     private Boolean passFlag;
     private String status;
+    private String phase;
+    private Boolean runtimeFinalized;
+    private Long serverEpochMs;
 }

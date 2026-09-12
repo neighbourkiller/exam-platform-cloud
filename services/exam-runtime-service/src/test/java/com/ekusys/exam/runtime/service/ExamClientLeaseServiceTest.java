@@ -36,7 +36,7 @@ class ExamClientLeaseServiceTest {
     void setUp() {
         jdbc = mock(JdbcTemplate.class);
         redis = mock(StringRedisTemplate.class);
-        service = new ExamClientLeaseService(jdbc, redis, new ClientLeaseProperties());
+        service = new ExamClientLeaseService(jdbc, redis, new ClientLeaseProperties(), null);
     }
 
     @Test
@@ -163,6 +163,41 @@ class ExamClientLeaseServiceTest {
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         verify(jdbc).update(sql.capture(), any(Object[].class));
         assertFalse(sql.getValue().contains("set active_client_token=?"));
+    }
+
+    @Test
+    void clearBlockedThreeSecondsDoesNotBlockCallingThread() throws Exception {
+        java.util.concurrent.Executor asyncExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        java.util.concurrent.CountDownLatch blockLatch = new java.util.concurrent.CountDownLatch(1);
+
+        org.mockito.Mockito.doAnswer(invocation -> {
+            blockLatch.await(3, java.util.concurrent.TimeUnit.SECONDS);
+            return 1L;
+        }).when(redis).execute(any(RedisScript.class), anyList(), anyString());
+
+        ExamClientLeaseService asyncService = new ExamClientLeaseService(
+            jdbc, redis, new ClientLeaseProperties(), asyncExecutor
+        );
+
+        long start = System.currentTimeMillis();
+        asyncService.clearAfterCommit(10L, 20L, "token");
+        long elapsed = System.currentTimeMillis() - start;
+
+        org.assertj.core.api.Assertions.assertThat(elapsed).isLessThan(500);
+        blockLatch.countDown();
+    }
+
+    @Test
+    void clearQueueSaturationDropsGracefullyWithoutThrowing() {
+        java.util.concurrent.Executor rejectingExecutor = command -> {
+            throw new RuntimeException("Queue saturated");
+        };
+        ExamClientLeaseService rejectingService = new ExamClientLeaseService(
+            jdbc, redis, new ClientLeaseProperties(), rejectingExecutor
+        );
+
+        // Must not throw to caller
+        rejectingService.clearAfterCommit(10L, 20L, "token");
     }
 
     private void mockRedisRenewal() {

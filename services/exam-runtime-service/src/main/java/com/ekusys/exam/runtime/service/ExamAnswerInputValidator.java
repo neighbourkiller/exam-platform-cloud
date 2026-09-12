@@ -5,7 +5,6 @@ import com.ekusys.exam.exam.dto.AnswerPayload;
 import com.ekusys.exam.exam.dto.ExamAnswerLimits;
 import com.ekusys.exam.exam.dto.SnapshotRequest;
 import com.ekusys.exam.exam.dto.SubmitExamRequest;
-import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
@@ -53,10 +52,14 @@ public class ExamAnswerInputValidator {
     }
 
     public void validateSnapshotVersion(SnapshotRequest request, LocalDateTime receivedAt) {
-        long serverTime = Timestamp.valueOf(receivedAt).getTime();
+        long serverTime = RuntimeTime.epochMillis(receivedAt);
         long maxVersion = serverTime + ExamAnswerLimits.MAX_FUTURE_SKEW_MILLIS;
         validateVersion(request.getClientTimestamp(), maxVersion);
         validateVersion(request.getSnapshotVersion(), maxVersion);
+        validateVersion(request.getClientSequence(), maxVersion);
+        if (request.getBaseServerRevision() != null && request.getBaseServerRevision() <= 0) {
+            throw new BusinessException(INVALID_VERSION_CODE, "服务端草稿版本不正确");
+        }
     }
 
     private void validateVersion(Long version, long maxVersion) {

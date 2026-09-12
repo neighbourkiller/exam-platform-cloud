@@ -19,33 +19,67 @@ public class RuntimeOutboxService {
         this.writer = writer;
     }
 
-    public void submissionAccepted(Long submissionId) {
+    public SubmissionAcceptedReceipt submissionAccepted(Long submissionId) {
         SubmissionRow submission = jdbc.queryForObject(
-            "select id,exam_id,student_id,status,submitted_at,timeout_submit from submission where id=?",
+            """
+                select s.id,s.exam_id,s.student_id,s.status,s.submitted_at,s.timeout_submit,
+                       fp.source,fp.snapshot_version,fp.payload_sha256,fp.finalized_at,
+                       current_timestamp(3) occurred_at
+                  from submission s
+                  left join submission_final_payload fp on fp.submission_id=s.id
+                 where s.id=?
+                """,
             (rs, rowNum) -> new SubmissionRow(
                 rs.getLong("id"), rs.getLong("exam_id"), rs.getLong("student_id"), rs.getString("status"),
-                rs.getObject("submitted_at", LocalDateTime.class), rs.getBoolean("timeout_submit")
+                rs.getObject("submitted_at", LocalDateTime.class), rs.getBoolean("timeout_submit"),
+                rs.getString("source"), rs.getObject("snapshot_version", Long.class),
+                rs.getString("payload_sha256"), rs.getObject("finalized_at", LocalDateTime.class),
+                rs.getObject("occurred_at", LocalDateTime.class)
             ),
             submissionId
         );
-        String eventId = submissionAcceptedEventId(submissionId);
+        return submissionAcceptedKnown(new SubmissionAcceptedContext(
+            submission.id(), submission.examId(), submission.studentId(), submission.status(),
+            submission.submittedAt(), submission.timeoutSubmit(), submission.source(),
+            submission.snapshotVersion(), submission.payloadSha256(), submission.finalizedAt(),
+            submission.occurredAt()
+        ));
+    }
+
+    public SubmissionAcceptedReceipt submissionAcceptedKnown(SubmissionAcceptedContext submission) {
+        String eventId = submissionAcceptedEventId(submission.submissionId());
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("submissionId", submission.id());
+        data.put("submissionId", submission.submissionId());
         data.put("examId", submission.examId());
         data.put("studentId", submission.studentId());
         data.put("status", submission.status());
         data.put("submittedAt", submission.submittedAt());
         data.put("timeoutSubmit", submission.timeoutSubmit());
+        data.put("submissionSource", submission.submissionSource());
+        data.put("finalSnapshotVersion", submission.finalSnapshotVersion());
+        data.put("payloadSha256", submission.payloadSha256());
+        data.put("runtimeFinalizedAt", submission.runtimeFinalizedAt());
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("eventId", eventId);
         event.put("eventType", "SubmissionAccepted");
-        event.put("version", 1);
-        event.put("aggregateId", String.valueOf(submissionId));
-        event.put("occurredAt", LocalDateTime.now());
+        event.put("version", 2);
+        event.put("aggregateId", String.valueOf(submission.submissionId()));
+        event.put("occurredAt", submission.occurredAt());
         event.put("traceId", null);
         event.put("producer", "exam-runtime-service");
         event.put("data", data);
-        writer.append(eventId, "SUBMISSION", String.valueOf(submissionId), "SubmissionAccepted", event);
+        writer.append(
+            eventId, "SUBMISSION", String.valueOf(submission.submissionId()), "SubmissionAccepted", event
+        );
+        return new SubmissionAcceptedReceipt(
+            submission.submissionId(),
+            submission.examId(),
+            submission.studentId(),
+            submission.submittedAt(),
+            submission.runtimeFinalizedAt(),
+            submission.finalSnapshotVersion(),
+            submission.timeoutSubmit()
+        );
     }
 
     public String submissionAcceptedEventId(Long submissionId) {
@@ -114,6 +148,23 @@ public class RuntimeOutboxService {
     }
 
     private record SubmissionRow(Long id, Long examId, Long studentId, String status,
-                                 LocalDateTime submittedAt, boolean timeoutSubmit) {
+                                 LocalDateTime submittedAt, boolean timeoutSubmit,
+                                 String source, Long snapshotVersion, String payloadSha256,
+                                 LocalDateTime finalizedAt, LocalDateTime occurredAt) {
+    }
+
+    public record SubmissionAcceptedContext(
+        Long submissionId,
+        Long examId,
+        Long studentId,
+        String status,
+        LocalDateTime submittedAt,
+        boolean timeoutSubmit,
+        String submissionSource,
+        Long finalSnapshotVersion,
+        String payloadSha256,
+        LocalDateTime runtimeFinalizedAt,
+        LocalDateTime occurredAt
+    ) {
     }
 }

@@ -9,6 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
@@ -69,6 +70,23 @@ public class SubmissionFinalPayloadService {
                 """,
             submissionId, source, encoded.snapshotVersion(), CODEC,
             encoded.payload(), encoded.sha256()
+        );
+        if (inserted != 1) {
+            throw new IllegalStateException("最终答案写入失败");
+        }
+    }
+
+    public void store(Long submissionId, String source, EncodedFinalAnswers encoded,
+                      LocalDateTime finalizedAt) {
+        int inserted = jdbc.update(
+            """
+                insert into submission_final_payload(
+                    submission_id,source,snapshot_version,codec,payload,payload_sha256,
+                    finalized_at,created_at
+                ) values(?,?,?,?,?,?,?,current_timestamp(3))
+                """,
+            submissionId, source, encoded.snapshotVersion(), CODEC,
+            encoded.payload(), encoded.sha256(), finalizedAt
         );
         if (inserted != 1) {
             throw new IllegalStateException("最终答案写入失败");

@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.ekusys.exam.common.outbox.OutboxEventWriter;
@@ -75,5 +76,39 @@ class RuntimeOutboxServiceTest {
         assertThat(payload.get("eventId")).isEqualTo(expectedEventId);
         assertThat(data.get("submissionId")).isEqualTo(99L);
         assertThat(data.get("submittedAt")).isEqualTo(submittedAt);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void knownSubmissionContextAvoidsDatabaseReadAndKeepsVersionTwoPayload() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        OutboxEventWriter writer = mock(OutboxEventWriter.class);
+        RuntimeOutboxService service = new RuntimeOutboxService(jdbc, writer);
+        LocalDateTime finalizedAt = LocalDateTime.of(2026, 9, 12, 12, 0);
+        RuntimeOutboxService.SubmissionAcceptedContext context =
+            new RuntimeOutboxService.SubmissionAcceptedContext(
+                99L, 11L, 7L, "PROCESSING", finalizedAt, true, "TIMEOUT",
+                12L, "payload-hash", finalizedAt, finalizedAt
+            );
+
+        SubmissionAcceptedReceipt receipt = service.submissionAcceptedKnown(context);
+
+        verifyNoInteractions(jdbc);
+        ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
+        verify(writer).append(
+            eq(service.submissionAcceptedEventId(99L)), eq("SUBMISSION"), eq("99"),
+            eq("SubmissionAccepted"), event.capture()
+        );
+        Map<String, Object> payload = (Map<String, Object>) event.getValue();
+        Map<String, Object> data = (Map<String, Object>) payload.get("data");
+        assertThat(payload.get("version")).isEqualTo(2);
+        assertThat(payload.get("occurredAt")).isEqualTo(finalizedAt);
+        assertThat(data)
+            .containsEntry("submissionSource", "TIMEOUT")
+            .containsEntry("finalSnapshotVersion", 12L)
+            .containsEntry("payloadSha256", "payload-hash")
+            .containsEntry("runtimeFinalizedAt", finalizedAt);
+        assertThat(receipt.submissionId()).isEqualTo(99L);
+        assertThat(receipt.timeoutSubmit()).isTrue();
     }
 }

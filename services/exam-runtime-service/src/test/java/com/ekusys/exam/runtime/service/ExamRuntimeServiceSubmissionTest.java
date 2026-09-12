@@ -119,6 +119,8 @@ class ExamRuntimeServiceSubmissionTest {
 
             assertThat(result.getSubmissionId()).isEqualTo(SUBMISSION_ID);
             assertThat(result.getStatus()).isEqualTo("PROCESSING");
+            assertThat(result.getPhase()).isEqualTo("RUNTIME_FINALIZED");
+            assertThat(result.getRuntimeFinalized()).isTrue();
         }
 
         verify(fixture.validator).validateSubmitRequest(request);
@@ -141,6 +143,7 @@ class ExamRuntimeServiceSubmissionTest {
 
             assertThat(result.getSubmissionId()).isEqualTo(SUBMISSION_ID);
             assertThat(result.getStatus()).isEqualTo("PROCESSING");
+            assertThat(result.getRuntimeFinalized()).isTrue();
         }
 
         verify(fixture.timeoutService).submitExpired(SESSION_ID, EXAM_ID, USER_ID);
@@ -160,8 +163,33 @@ class ExamRuntimeServiceSubmissionTest {
             var result = fixture.service.submit(EXAM_ID, new SubmitExamRequest());
 
             assertThat(result.getStatus()).isEqualTo("SUBMITTING");
+            assertThat(result.getPhase()).isEqualTo("HANDOFF_ACCEPTED");
+            assertThat(result.getRuntimeFinalized()).isFalse();
         }
 
+        verifyNoInteractions(fixture.validator, fixture.leaseService, fixture.manualSubmissionService);
+    }
+
+    @Test
+    void v2ExpiredSubmissionAcknowledgesExistingDueTaskWithoutCoordinatorWritePath() throws Exception {
+        LocalDateTime deadline = LocalDateTime.of(2026, 7, 12, 9, 59);
+        Fixture fixture = fixture(deadline);
+        fixture.timeoutTaskStatus.set("PENDING");
+        fixture.timeoutTaskDueAt.set(deadline);
+        when(fixture.timeoutService.isV2Enabled()).thenReturn(true);
+
+        try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(USER_ID);
+            var result = fixture.service.submit(EXAM_ID, new SubmitExamRequest());
+
+            assertThat(result.getStatus()).isEqualTo("SUBMITTING");
+            assertThat(result.getPhase()).isEqualTo("HANDOFF_ACCEPTED");
+            assertThat(result.getRuntimeFinalized()).isFalse();
+        }
+
+        verify(fixture.timeoutService, org.mockito.Mockito.never()).acceptExpired(
+            any(), any(), any(), any()
+        );
         verifyNoInteractions(fixture.validator, fixture.leaseService, fixture.manualSubmissionService);
     }
 
@@ -177,9 +205,39 @@ class ExamRuntimeServiceSubmissionTest {
 
             assertThat(result.getSubmissionId()).isEqualTo(SUBMISSION_ID);
             assertThat(result.getStatus()).isEqualTo("PROCESSING");
+            assertThat(result.getRuntimeFinalized()).isTrue();
         }
 
         verifyNoInteractions(fixture.validator, fixture.leaseService, fixture.manualSubmissionService);
+    }
+
+    @Test
+    void submissionStatusOnlyMarksCommittedRuntimeStateAsFinalized() throws Exception {
+        Fixture fixture = fixture(LocalDateTime.of(2026, 7, 12, 10, 5));
+        fixture.sessionStatus.set("SUBMITTED");
+        doAnswer(invocation -> {
+            RowMapper<?> rowMapper = invocation.getArgument(1);
+            ResultSet resultSet = mock(ResultSet.class);
+            when(resultSet.getObject("submission_id", Long.class)).thenReturn(SUBMISSION_ID);
+            when(resultSet.getString("submission_status")).thenReturn("PROCESSING");
+            when(resultSet.getObject("timeout_submit")).thenReturn(1);
+            when(resultSet.getBoolean("timeout_submit")).thenReturn(true);
+            when(resultSet.getObject("submitted_at", LocalDateTime.class)).thenReturn(fixture.now);
+            when(resultSet.getObject("final_snapshot_version", Long.class)).thenReturn(1L);
+            when(resultSet.getObject("finalized_at", LocalDateTime.class)).thenReturn(fixture.now);
+            return List.of(rowMapper.mapRow(resultSet, 0));
+        }).when(fixture.jdbc).query(
+            contains("submission_status"), any(RowMapper.class), eq(EXAM_ID), eq(USER_ID)
+        );
+
+        try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(USER_ID);
+            var result = fixture.service.submissionStatus(EXAM_ID);
+
+            assertThat(result.getPhase()).isEqualTo("RUNTIME_FINALIZED");
+            assertThat(result.getRuntimeFinalized()).isTrue();
+            assertThat(result.getTimeoutTaskStatus()).isEqualTo("DONE");
+        }
     }
 
     private Fixture fixture(LocalDateTime deadline) throws Exception {
@@ -196,6 +254,8 @@ class ExamRuntimeServiceSubmissionTest {
         TransactionTemplate transactions = mock(TransactionTemplate.class);
         LocalDateTime now = LocalDateTime.of(2026, 7, 12, 10, 0);
         AtomicReference<String> sessionStatus = new AtomicReference<>("ANSWERING");
+        AtomicReference<String> timeoutTaskStatus = new AtomicReference<>();
+        AtomicReference<LocalDateTime> timeoutTaskDueAt = new AtomicReference<>();
 
         doAnswer(invocation -> {
             TransactionCallback<?> callback = invocation.getArgument(0);
@@ -209,6 +269,19 @@ class ExamRuntimeServiceSubmissionTest {
             when(resultSet.getObject("start_time", LocalDateTime.class)).thenReturn(now.minusMinutes(30));
             when(resultSet.getObject("deadline_time", LocalDateTime.class)).thenReturn(deadline);
             when(resultSet.getString("status")).thenAnswer(ignored -> sessionStatus.get());
+            when(resultSet.getLong("session_id")).thenReturn(SESSION_ID);
+            when(resultSet.getString("session_status")).thenAnswer(ignored -> sessionStatus.get());
+            when(resultSet.getObject("submission_id", Long.class)).thenReturn(SUBMISSION_ID);
+            when(resultSet.getObject("timeout_task_id", Long.class)).thenAnswer(
+                ignored -> timeoutTaskStatus.get() == null ? null : SESSION_ID
+            );
+            when(resultSet.getString("timeout_task_status")).thenAnswer(
+                ignored -> timeoutTaskStatus.get()
+            );
+            when(resultSet.getObject("timeout_task_due_at", LocalDateTime.class)).thenAnswer(
+                ignored -> timeoutTaskDueAt.get()
+            );
+            when(resultSet.getObject("db_now", LocalDateTime.class)).thenReturn(now);
             return List.of(rowMapper.mapRow(resultSet, 0));
         }).when(jdbc).query(
             contains("from exam_session"), any(RowMapper.class), eq(EXAM_ID), eq(USER_ID)
@@ -231,11 +304,12 @@ class ExamRuntimeServiceSubmissionTest {
             timeoutTasks,
             manualSubmissionService,
             finalPayloads,
+            mock(SubmissionStatusProjectionService.class),
             transactions
         );
         return new Fixture(
-            service, outbox, timeoutService, snapshotService, leaseService, validator,
-            manualSubmissionService, sessionStatus, now
+            service, jdbc, outbox, timeoutService, snapshotService, leaseService, validator,
+            manualSubmissionService, sessionStatus, timeoutTaskStatus, timeoutTaskDueAt, now
         );
     }
 
@@ -252,6 +326,7 @@ class ExamRuntimeServiceSubmissionTest {
 
     private record Fixture(
         ExamRuntimeService service,
+        JdbcTemplate jdbc,
         RuntimeOutboxService outbox,
         TimeoutSubmissionService timeoutService,
         ExamSnapshotService snapshotService,
@@ -259,6 +334,8 @@ class ExamRuntimeServiceSubmissionTest {
         ExamAnswerInputValidator validator,
         ManualSubmissionService manualSubmissionService,
         AtomicReference<String> sessionStatus,
+        AtomicReference<String> timeoutTaskStatus,
+        AtomicReference<LocalDateTime> timeoutTaskDueAt,
         LocalDateTime now
     ) {
     }

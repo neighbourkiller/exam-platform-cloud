@@ -51,10 +51,24 @@ public class OutboxPublisher {
         increment("lease_recovered", batch.recoveredForRetry());
         increment("lease_failed", batch.recoveredAsFailed());
         increment("claimed", batch.rows().size());
-        List<CompletableFuture<Void>> tasks = batch.rows().stream()
-            .map(row -> CompletableFuture.runAsync(() -> publish(row), executor))
+        List<CompletableFuture<PublishAttempt>> tasks = batch.rows().stream()
+            .map(row -> CompletableFuture.supplyAsync(() -> publish(row), executor))
             .toList();
-        CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new)).join();
+        List<PublishAttempt> attempts = tasks.stream().map(CompletableFuture::join).toList();
+        List<OutboxRow> acknowledged = attempts.stream()
+            .filter(PublishAttempt::acknowledged)
+            .map(PublishAttempt::row)
+            .toList();
+        int published = acknowledged.isEmpty() ? 0 : repository.markPublishedBatch(acknowledged);
+        increment("published", published);
+        int stale = acknowledged.size() - published;
+        increment("stale_update", stale);
+        if (stale > 0) {
+            log.warn("Ignore {} stale Outbox publish results after batch confirmation", stale);
+        }
+        attempts.stream()
+            .filter(attempt -> !attempt.acknowledged())
+            .forEach(this::recordFailure);
     }
 
     @Scheduled(
@@ -74,7 +88,7 @@ public class OutboxPublisher {
         increment("cleanup_deleted", deleted);
     }
 
-    private void publish(OutboxRow row) {
+    private PublishAttempt publish(OutboxRow row) {
         try {
             CorrelationData correlation = new CorrelationData(row.id());
             rabbitTemplate.convertAndSend(
@@ -89,32 +103,39 @@ public class OutboxPublisher {
             if (correlation.getReturned() != null) {
                 throw new IllegalStateException("RabbitMQ returned event: " + correlation.getReturned());
             }
-            if (repository.markPublished(row)) {
-                increment("published", 1);
-            } else {
-                increment("stale_update", 1);
-                log.warn("Ignore stale Outbox publish result: eventId={}", row.id());
-            }
+            return new PublishAttempt(row, null);
         } catch (Exception exception) {
-            OutboxFailureResult result = repository.markFailedAttempt(row, exception);
-            if (!result.updated()) {
-                increment("stale_update", 1);
-                log.warn("Ignore stale Outbox failure result: eventId={}", row.id());
-            } else if (result.failedPermanently()) {
-                increment("failed", 1);
-                log.error("Outbox event reached max attempts: eventId={}, eventType={}, attempts={}",
-                    row.id(), row.eventType(), result.failureCount());
-            } else {
-                increment("retry", 1);
-                log.warn("Outbox publish failed, retry scheduled: eventId={}, eventType={}, attempts={}, reason={}",
-                    row.id(), row.eventType(), result.failureCount(), exception.getMessage());
-            }
+            return new PublishAttempt(row, exception);
+        }
+    }
+
+    private void recordFailure(PublishAttempt attempt) {
+        OutboxRow row = attempt.row();
+        Exception exception = attempt.failure();
+        OutboxFailureResult result = repository.markFailedAttempt(row, exception);
+        if (!result.updated()) {
+            increment("stale_update", 1);
+            log.warn("Ignore stale Outbox failure result: eventId={}", row.id());
+        } else if (result.failedPermanently()) {
+            increment("failed", 1);
+            log.error("Outbox event reached max attempts: eventId={}, eventType={}, attempts={}",
+                row.id(), row.eventType(), result.failureCount());
+        } else {
+            increment("retry", 1);
+            log.warn("Outbox publish failed, retry scheduled: eventId={}, eventType={}, attempts={}, reason={}",
+                row.id(), row.eventType(), result.failureCount(), exception.getMessage());
         }
     }
 
     private void increment(String outcome, int amount) {
         if (amount > 0) {
             meterRegistry.counter("exam.outbox.events", "outcome", outcome).increment(amount);
+        }
+    }
+
+    private record PublishAttempt(OutboxRow row, Exception failure) {
+        private boolean acknowledged() {
+            return failure == null;
         }
     }
 }

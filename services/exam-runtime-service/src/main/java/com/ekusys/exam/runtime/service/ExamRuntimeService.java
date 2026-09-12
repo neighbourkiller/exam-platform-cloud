@@ -50,6 +50,7 @@ public class ExamRuntimeService {
     private final TimeoutTaskRepository timeoutTasks;
     private final ManualSubmissionService manualSubmissionService;
     private final SubmissionFinalPayloadService finalPayloads;
+    private final SubmissionStatusProjectionService projectionService;
     private final TransactionTemplate transactions;
 
     public ExamRuntimeService(JdbcTemplate jdbc, ManagementRuntimeClient management,
@@ -61,6 +62,7 @@ public class ExamRuntimeService {
                               TimeoutTaskRepository timeoutTasks,
                               ManualSubmissionService manualSubmissionService,
                               SubmissionFinalPayloadService finalPayloads,
+                              SubmissionStatusProjectionService projectionService,
                               TransactionTemplate transactions) {
         this.jdbc = jdbc;
         this.management = management;
@@ -73,6 +75,7 @@ public class ExamRuntimeService {
         this.timeoutTasks = timeoutTasks;
         this.manualSubmissionService = manualSubmissionService;
         this.finalPayloads = finalPayloads;
+        this.projectionService = projectionService;
         this.transactions = transactions;
     }
 
@@ -113,6 +116,7 @@ public class ExamRuntimeService {
             if (!"ANSWERING".equals(session.status())) {
                 throw new BusinessException("你已提交过本场考试");
             }
+            timeoutTasks.ensureTask(session.id(), examId, userId, session.deadline());
             lease = clientLeaseService.acquire(
                 examId, userId, session.id(), session.deadline(),
                 clientId(request), leaseToken(request), now
@@ -157,6 +161,7 @@ public class ExamRuntimeService {
                 if (!"ANSWERING".equals(session.status())) {
                     throw new BusinessException("你已提交过本场考试");
                 }
+                timeoutTasks.ensureTask(session.id(), examId, userId, session.deadline());
                 lease = clientLeaseService.acquire(
                     examId, userId, session.id(), session.deadline(),
                     clientId(request), leaseToken(request), now
@@ -164,7 +169,9 @@ public class ExamRuntimeService {
             }
         }
 
-        timeoutTasks.ensureTask(session.id(), examId, userId, session.deadline());
+        if (!resumed) {
+            timeoutTasks.ensureTask(session.id(), examId, userId, session.deadline());
+        }
 
         SnapshotDraft draft = snapshotService.loadLatestDraft(examId, userId);
         List<StudentExamQuestionView> questions = admission.paper().questions().stream()
@@ -178,6 +185,8 @@ public class ExamRuntimeService {
             .startTime(session.start())
             .endTime(exam.endTime())
             .deadlineTime(session.deadline())
+            .serverEpochMs(RuntimeTime.epochMillis(now))
+            .deadlineEpochMs(RuntimeTime.epochMillis(session.deadline()))
             .draftUpdatedAt(draft.updatedAt())
             .leaseToken(lease.getLeaseToken())
             .leaseExpiresAt(lease.getLeaseExpiresAt())
@@ -190,15 +199,19 @@ public class ExamRuntimeService {
 
     public ExamClientLeaseView heartbeat(Long examId, ExamClientLeaseRequest request) {
         Long userId = requireUser();
-        LocalDateTime now = LocalDateTime.now();
-        return clientLeaseService.renew(
+        LocalDateTime now = dbNow();
+        ExamClientLeaseContext context = clientLeaseService.renew(
             examId, userId, clientId(request), leaseToken(request), now, false
-        ).lease();
+        );
+        ExamClientLeaseView lease = context.lease();
+        lease.setServerEpochMs(RuntimeTime.epochMillis(now));
+        lease.setDeadlineEpochMs(RuntimeTime.epochMillis(context.deadline()));
+        return lease;
     }
 
     public SnapshotAckView snapshot(Long examId, SnapshotRequest request) {
         Long userId = requireUser();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = dbNow();
         answerInputValidator.validateAnswers(request.getAnswers());
         answerInputValidator.validateSnapshotVersion(request, now);
         ExamClientLeaseContext leaseContext = clientLeaseService.renew(
@@ -227,71 +240,197 @@ public class ExamRuntimeService {
             return result;
         }
 
-        SessionRow session = session(examId, userId);
-        Long submissionId = submissionId(examId, userId);
-        if ("SUBMITTED".equals(session.status())) {
-            return submitResult(submissionId, "PROCESSING");
+        V2SubmissionContext context = v2SubmissionContext(examId, userId);
+        if ("SUBMITTED".equals(context.sessionStatus())) {
+            return submitResult(context.submissionId(), "PROCESSING", context.dbNow());
         }
-        if ("AUTO_SUBMITTING".equals(session.status())) {
-            return submitResult(submissionId, "SUBMITTING");
+        if ("AUTO_SUBMITTING".equals(context.sessionStatus())) {
+            recordSubmittingProjection(examId, userId, context.dbNow());
+            return submitResult(context.submissionId(), "SUBMITTING", context.dbNow());
         }
-        if (!"ANSWERING".equals(session.status())) {
+        if (!"ANSWERING".equals(context.sessionStatus())) {
             throw new BusinessException("会话已结束");
         }
 
-        LocalDateTime now = dbNow();
-        boolean expired = !now.isBefore(session.deadline());
+        LocalDateTime now = context.dbNow();
+        boolean expired = !now.isBefore(context.deadline());
         if (expired) {
-            String status = timeoutSubmissionService.acceptExpired(
-                session.id(), examId, userId, session.deadline()
-            );
-            return submitResult(submissionId, status);
+            String status = context.isDurablyDue()
+                ? "SUBMITTING"
+                : timeoutSubmissionService.acceptExpired(
+                    context.sessionId(), examId, userId, context.deadline()
+                );
+            if ("SUBMITTING".equals(status)) {
+                recordSubmittingProjection(examId, userId, now);
+            }
+            return submitResult(context.submissionId(), status, now);
         }
         answerInputValidator.validateSubmitRequest(request);
-        clientLeaseService.requireCurrent(session.id(), request.getClientId(), request.getLeaseToken(), now);
+        clientLeaseService.requireCurrent(
+            context.sessionId(), request.getClientId(), request.getLeaseToken(), now
+        );
 
-        long draftVersion = submissionDraftVersion(submissionId);
+        long draftVersion = submissionDraftVersion(context.submissionId());
         SubmissionFinalPayloadService.EncodedFinalAnswers encoded =
             finalPayloads.encode(request.getAnswers(), draftVersion);
         ManualSubmissionResult result = manualSubmissionService.submit(
-            session.id(), examId, userId, session.deadline(), submissionId, request, encoded
+            context.sessionId(), examId, userId, context.submissionId(), request, encoded
         );
         if ("PROCESSING".equals(result.status())) {
             snapshotService.clearAfterCommit(examId, userId);
             clientLeaseService.clearAfterCommit(examId, userId, request.getLeaseToken());
         }
-        return submitResult(submissionId, result.status());
+        return submitResult(context.submissionId(), result.status());
     }
 
     public SubmissionStatusView submissionStatus(Long examId) {
         Long userId = requireUser();
-        List<SubmissionStatusView> rows = jdbc.query(
-            """
-                select sub.id submission_id,s.status session_status,
-                       sub.status submission_status,sub.timeout_submit,sub.submitted_at,
-                       task.status timeout_task_status
-                  from exam_session s
-                  left join submission sub
-                    on sub.exam_id=s.exam_id and sub.student_id=s.student_id
-                  left join submission_timeout_task task on task.session_id=s.id
-                 where s.exam_id=? and s.student_id=?
-                 limit 1
-                """,
-            (rs, rowNum) -> SubmissionStatusView.builder()
-                .submissionId(rs.getObject("submission_id", Long.class))
-                .sessionStatus(rs.getString("session_status"))
-                .submissionStatus(rs.getString("submission_status"))
-                .timeoutTaskStatus(rs.getString("timeout_task_status"))
-                .timeoutSubmit(rs.getObject("timeout_submit") == null
-                    ? null : rs.getBoolean("timeout_submit"))
-                .submittedAt(rs.getObject("submitted_at", LocalDateTime.class))
-                .build(),
+        // 1 & 2. Check Redis derived projection first
+        SubmissionStatusView cached = projectionService.getCachedProjection(examId, userId);
+        if (cached != null) {
+            return cached;
+        }
+
+        // Check in-flight projection to prevent DB connection exhaustion during timeout storm
+        SubmissionStatusView inflight = projectionService.getInflightProjection(examId, userId);
+        if (inflight != null) {
+            return inflight;
+        }
+
+        // 3. Fallback: single-table query on exam_session
+        List<SessionStateRow> sessions = jdbc.query(
+            "select id, status, deadline_time, current_timestamp(3) db_now from exam_session where exam_id=? and student_id=? limit 1",
+            (rs, rowNum) -> new SessionStateRow(
+                rs.getLong("id"),
+                rs.getString("status"),
+                rs.getObject("deadline_time", LocalDateTime.class),
+                rs.getObject("db_now", LocalDateTime.class)
+            ),
             examId, userId
         );
-        if (rows.isEmpty()) {
-            throw new BusinessException("考试会话不存在");
+        SessionStateRow session = requireSession(sessions);
+        String sessionStatus = session.status();
+        LocalDateTime dbNow = session.dbNow() != null ? session.dbNow() : LocalDateTime.now();
+
+        // 4. ANSWERING / AUTO_SUBMITTING: return lightweight non-finalized status directly
+        if ("ANSWERING".equals(sessionStatus) || "AUTO_SUBMITTING".equals(sessionStatus)) {
+            boolean autoSubmitting = "AUTO_SUBMITTING".equals(sessionStatus);
+            String phase = autoSubmitting ? "SUBMITTING" : "ANSWERING";
+            SubmissionStatusView view = SubmissionStatusView.builder()
+                .sessionStatus(sessionStatus)
+                .submissionStatus("IN_PROGRESS")
+                .timeoutTaskStatus(autoSubmitting ? "PROCESSING" : "PENDING")
+                .phase(phase)
+                .runtimeFinalized(false)
+                .serverEpochMs(RuntimeTime.epochMillis(dbNow))
+                .retryable(true)
+                .build();
+            projectionService.recordInflightProjection(examId, userId, view);
+            return view;
         }
-        return rows.getFirst();
+
+        // 5. SUBMITTED: query submission and final payload, construct view and asynchronously backfill Redis
+        if ("SUBMITTED".equals(sessionStatus)) {
+            List<SubmittedPayloadRow> submittedRows = jdbc.query(
+                """
+                    select sub.id submission_id, sub.status submission_status, sub.timeout_submit,
+                           sub.submitted_at, fp.snapshot_version final_snapshot_version, fp.finalized_at
+                      from submission sub
+                      left join submission_final_payload fp on fp.submission_id=sub.id
+                     where sub.exam_id=? and sub.student_id=?
+                     limit 1
+                    """,
+                (rs, rowNum) -> new SubmittedPayloadRow(
+                    rs.getObject("submission_id", Long.class),
+                    rs.getString("submission_status"),
+                    rs.getObject("timeout_submit") == null ? null : rs.getBoolean("timeout_submit"),
+                    rs.getObject("submitted_at", LocalDateTime.class),
+                    rs.getObject("final_snapshot_version", Long.class),
+                    rs.getObject("finalized_at", LocalDateTime.class)
+                ),
+                examId, userId
+            );
+            if (!submittedRows.isEmpty()) {
+                SubmittedPayloadRow sub = submittedRows.getFirst();
+                boolean runtimeFinalized = isRuntimeFinalized(sessionStatus, sub.submissionStatus());
+                SubmissionStatusView view = SubmissionStatusView.builder()
+                    .submissionId(sub.submissionId())
+                    .sessionStatus(sessionStatus)
+                    .submissionStatus(sub.submissionStatus())
+                    .timeoutTaskStatus("DONE")
+                    .timeoutSubmit(sub.timeoutSubmit())
+                    .submittedAt(sub.submittedAt())
+                    .phase(submissionPhase(runtimeFinalized, sessionStatus, "DONE"))
+                    .runtimeFinalized(runtimeFinalized)
+                    .serverEpochMs(RuntimeTime.epochMillis(dbNow))
+                    .retryable(false)
+                    .finalSnapshotVersion(sub.finalSnapshotVersion())
+                    .finalizedAt(sub.finalizedAt())
+                    .build();
+                projectionService.refreshProjectionAsync(examId, userId, view);
+                return view;
+            }
+        }
+
+        // 6. SUBMISSION_FAILED: query Task for failureCode/incidentId
+        if ("SUBMISSION_FAILED".equals(sessionStatus)) {
+            List<FailedTaskRow> failedRows = jdbc.query(
+                """
+                    select task.status timeout_task_status, task.failure_code, task.incident_id,
+                           sub.id submission_id, sub.status submission_status
+                      from submission_timeout_task task
+                      left join submission sub on sub.exam_id=task.exam_id and sub.student_id=task.student_id
+                     where task.session_id=?
+                     limit 1
+                    """,
+                (rs, rowNum) -> new FailedTaskRow(
+                    rs.getString("timeout_task_status"),
+                    rs.getString("failure_code"),
+                    rs.getString("incident_id"),
+                    rs.getObject("submission_id", Long.class),
+                    rs.getString("submission_status")
+                ),
+                session.id()
+            );
+            String failureCode = null;
+            String incidentId = null;
+            String timeoutTaskStatus = "FAILED";
+            Long submissionId = null;
+            String submissionStatus = "IN_PROGRESS";
+            if (!failedRows.isEmpty()) {
+                FailedTaskRow failed = failedRows.getFirst();
+                failureCode = failed.failureCode();
+                incidentId = failed.incidentId();
+                timeoutTaskStatus = failed.timeoutTaskStatus();
+                submissionId = failed.submissionId();
+                if (failed.submissionStatus() != null) {
+                    submissionStatus = failed.submissionStatus();
+                }
+            }
+            return SubmissionStatusView.builder()
+                .submissionId(submissionId)
+                .sessionStatus(sessionStatus)
+                .submissionStatus(submissionStatus)
+                .timeoutTaskStatus(timeoutTaskStatus)
+                .phase("FAILED")
+                .runtimeFinalized(false)
+                .serverEpochMs(RuntimeTime.epochMillis(dbNow))
+                .failureCode(failureCode)
+                .incidentId(incidentId)
+                .retryable(false)
+                .build();
+        }
+
+        // Fallback for other states (PREPARED, WAITING, CANCELLED, etc.)
+        return SubmissionStatusView.builder()
+            .sessionStatus(sessionStatus)
+            .submissionStatus("IN_PROGRESS")
+            .timeoutTaskStatus(null)
+            .phase(sessionStatus)
+            .runtimeFinalized(false)
+            .serverEpochMs(RuntimeTime.epochMillis(dbNow))
+            .retryable(true)
+            .build();
     }
 
     private SubmitResultView submitLegacy(Long examId, Long userId, SubmitExamRequest request) {
@@ -327,7 +466,8 @@ public class ExamRuntimeService {
                 """,
             session.id()
         );
-        outbox.submissionAccepted(submissionId);
+        com.ekusys.exam.runtime.messaging.SubmissionAcceptedReceipt receipt = outbox.submissionAccepted(submissionId);
+        projectionService.recordSubmittedAfterCommit(receipt);
         snapshotService.clearAfterCommit(examId, userId);
         clientLeaseService.clearAfterCommit(examId, userId, request.getLeaseToken());
         return submitResult(submissionId, "PROCESSING");
@@ -416,11 +556,7 @@ public class ExamRuntimeService {
     }
 
     private SessionRow session(Long examId, Long userId) {
-        List<SessionRow> rows = findSessions(examId, userId);
-        if (rows.isEmpty()) {
-            throw new BusinessException("考试会话不存在");
-        }
-        return rows.getFirst();
+        return requireSession(findSessions(examId, userId));
     }
 
     private Long submissionId(Long examId, Long userId) {
@@ -430,9 +566,48 @@ public class ExamRuntimeService {
         );
     }
 
+    private V2SubmissionContext v2SubmissionContext(Long examId, Long userId) {
+        List<V2SubmissionContext> rows = jdbc.query(
+            """
+                select sess.id session_id,sess.deadline_time,sess.status session_status,
+                       sub.id submission_id,t.id timeout_task_id,t.status timeout_task_status,
+                       t.due_at timeout_task_due_at,current_timestamp(3) db_now
+                  from exam_session sess
+                  left join submission sub
+                    on sub.exam_id=sess.exam_id and sub.student_id=sess.student_id
+                  left join submission_timeout_task t on t.session_id=sess.id
+                 where sess.exam_id=? and sess.student_id=?
+                """,
+            (rs, rowNum) -> new V2SubmissionContext(
+                rs.getLong("session_id"),
+                rs.getObject("deadline_time", LocalDateTime.class),
+                rs.getString("session_status"),
+                rs.getObject("submission_id", Long.class),
+                rs.getObject("timeout_task_id", Long.class),
+                rs.getString("timeout_task_status"),
+                rs.getObject("timeout_task_due_at", LocalDateTime.class),
+                rs.getObject("db_now", LocalDateTime.class)
+            ),
+            examId, userId
+        );
+        V2SubmissionContext context = requireSession(rows);
+        if (context.submissionId() == null) {
+            throw new IllegalStateException("考试提交记录不存在");
+        }
+        if (context.deadline() == null || context.dbNow() == null) {
+            throw new IllegalStateException("考试会话缺少截止时间");
+        }
+        return context;
+    }
+
     private long submissionDraftVersion(Long submissionId) {
         Long version = jdbc.queryForObject(
-            "select draft_version from submission where id=?",
+            """
+                select coalesce(d.server_revision,s.draft_version)
+                  from submission s
+                  left join submission_draft_payload d on d.submission_id=s.id
+                 where s.id=?
+                """,
             Long.class,
             submissionId
         );
@@ -440,7 +615,54 @@ public class ExamRuntimeService {
     }
 
     private SubmitResultView submitResult(Long submissionId, String status) {
-        return SubmitResultView.builder().submissionId(submissionId).status(status).build();
+        return submitResult(submissionId, status, dbNow());
+    }
+
+    private SubmitResultView submitResult(Long submissionId, String status, LocalDateTime now) {
+        boolean runtimeFinalized = "PROCESSING".equals(status) || "SUBMITTED".equals(status);
+        return SubmitResultView.builder()
+            .submissionId(submissionId)
+            .status(status)
+            .phase(runtimeFinalized ? "RUNTIME_FINALIZED" : "HANDOFF_ACCEPTED")
+            .runtimeFinalized(runtimeFinalized)
+            .serverEpochMs(RuntimeTime.epochMillis(now))
+            .build();
+    }
+
+    private void recordSubmittingProjection(Long examId, Long userId, LocalDateTime now) {
+        projectionService.recordInflightProjection(
+            examId,
+            userId,
+            SubmissionStatusView.builder()
+                .sessionStatus("AUTO_SUBMITTING")
+                .submissionStatus("IN_PROGRESS")
+                .timeoutTaskStatus("PROCESSING")
+                .phase("SUBMITTING")
+                .runtimeFinalized(false)
+                .serverEpochMs(RuntimeTime.epochMillis(now))
+                .retryable(true)
+                .build()
+        );
+    }
+
+    private boolean isRuntimeFinalized(String sessionStatus, String submissionStatus) {
+        return "SUBMITTED".equals(sessionStatus)
+            && ("PROCESSING".equals(submissionStatus) || "SUBMITTED".equals(submissionStatus));
+    }
+
+    private String submissionPhase(boolean runtimeFinalized, String sessionStatus,
+                                   String timeoutTaskStatus) {
+        if (runtimeFinalized) {
+            return "RUNTIME_FINALIZED";
+        }
+        if ("FAILED".equals(timeoutTaskStatus)) {
+            return "FAILED";
+        }
+        if ("AUTO_SUBMITTING".equals(sessionStatus)
+            || "PROCESSING".equals(timeoutTaskStatus)) {
+            return "HANDOFF_ACCEPTED";
+        }
+        return sessionStatus == null ? "UNKNOWN" : sessionStatus;
     }
 
     private String clientId(StartExamRequest request) {
@@ -511,6 +733,36 @@ public class ExamRuntimeService {
         return userId;
     }
 
+    private static <T> T requireSession(List<T> rows) {
+        if (rows.isEmpty()) {
+            throw new BusinessException("考试会话不存在");
+        }
+        return rows.getFirst();
+    }
+
     private record SessionRow(Long id, LocalDateTime start, LocalDateTime deadline, String status) {
+    }
+
+    private record V2SubmissionContext(Long sessionId, LocalDateTime deadline, String sessionStatus,
+                                       Long submissionId, Long timeoutTaskId, String timeoutTaskStatus,
+                                       LocalDateTime timeoutTaskDueAt, LocalDateTime dbNow) {
+        private boolean isDurablyDue() {
+            return timeoutTaskId != null
+                && "PENDING".equals(timeoutTaskStatus)
+                && timeoutTaskDueAt != null
+                && !timeoutTaskDueAt.isAfter(dbNow);
+        }
+    }
+
+    private record SessionStateRow(Long id, String status, LocalDateTime deadline, LocalDateTime dbNow) {
+    }
+
+    private record SubmittedPayloadRow(Long submissionId, String submissionStatus, Boolean timeoutSubmit,
+                                       LocalDateTime submittedAt, Long finalSnapshotVersion,
+                                       LocalDateTime finalizedAt) {
+    }
+
+    private record FailedTaskRow(String timeoutTaskStatus, String failureCode, String incidentId,
+                                 Long submissionId, String submissionStatus) {
     }
 }

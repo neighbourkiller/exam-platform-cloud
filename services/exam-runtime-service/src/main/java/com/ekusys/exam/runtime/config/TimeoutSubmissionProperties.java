@@ -5,16 +5,18 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "app.timeout-submission")
 public class TimeoutSubmissionProperties {
     private boolean enabled;
-    private int batchSize = 200;
+    private int batchSize = 8;
     private int workerCount = 8;
-    private long leaseMs = 60_000L;
+    private long leaseMs = 30_000L;
     private long maxRunMs = 25_000L;
+    private long taskTimeoutMs = 20_000L;
+    private long leaseRenewIntervalMs = 10_000L;
+    private long backlogRefreshIntervalMs = 10_000L;
     private int maxAttempts = 12;
     private long backoffInitialMs = 1_000L;
     private double backoffMultiplier = 2.0;
     private long backoffMaxMs = 30_000L;
     private double backoffJitter = 0.2;
-    private int reconcileBatchSize = 1_000;
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -26,6 +28,14 @@ public class TimeoutSubmissionProperties {
     public void setLeaseMs(long leaseMs) { this.leaseMs = leaseMs; }
     public long getMaxRunMs() { return maxRunMs; }
     public void setMaxRunMs(long maxRunMs) { this.maxRunMs = maxRunMs; }
+    public long getTaskTimeoutMs() { return taskTimeoutMs; }
+    public void setTaskTimeoutMs(long taskTimeoutMs) { this.taskTimeoutMs = taskTimeoutMs; }
+    public long getLeaseRenewIntervalMs() { return leaseRenewIntervalMs; }
+    public void setLeaseRenewIntervalMs(long leaseRenewIntervalMs) { this.leaseRenewIntervalMs = leaseRenewIntervalMs; }
+    public long getBacklogRefreshIntervalMs() { return backlogRefreshIntervalMs; }
+    public void setBacklogRefreshIntervalMs(long backlogRefreshIntervalMs) {
+        this.backlogRefreshIntervalMs = backlogRefreshIntervalMs;
+    }
     public int getMaxAttempts() { return maxAttempts; }
     public void setMaxAttempts(int maxAttempts) { this.maxAttempts = maxAttempts; }
     public long getBackoffInitialMs() { return backoffInitialMs; }
@@ -36,17 +46,20 @@ public class TimeoutSubmissionProperties {
     public void setBackoffMaxMs(long backoffMaxMs) { this.backoffMaxMs = backoffMaxMs; }
     public double getBackoffJitter() { return backoffJitter; }
     public void setBackoffJitter(double backoffJitter) { this.backoffJitter = backoffJitter; }
-    public int getReconcileBatchSize() { return reconcileBatchSize; }
-    public void setReconcileBatchSize(int reconcileBatchSize) { this.reconcileBatchSize = reconcileBatchSize; }
 
     public int safeBatchSize() { return Math.max(1, batchSize); }
     public int safeWorkerCount() { return Math.max(1, workerCount); }
-    public long safeLeaseMs() { return Math.max(1_000L, leaseMs); }
+    public long safeLeaseMs() { return Math.max(2_000L, leaseMs); }
     public long safeMaxRunMs() { return Math.max(1_000L, maxRunMs); }
+    public long safeTaskTimeoutMs() { return Math.max(1_000L, Math.min(taskTimeoutMs, safeLeaseMs() - 1L)); }
+    public long safeLeaseRenewIntervalMs() {
+        return Math.max(1_000L, Math.min(leaseRenewIntervalMs, safeLeaseMs() / 2L));
+    }
+    public long safeBacklogRefreshIntervalMs() { return Math.max(1_000L, backlogRefreshIntervalMs); }
+    public int safeClaimSize() { return Math.min(safeBatchSize(), safeWorkerCount()); }
     public int safeMaxAttempts() { return Math.max(1, maxAttempts); }
     public long safeBackoffInitialMs() { return Math.max(1L, backoffInitialMs); }
     public long safeBackoffMaxMs() { return Math.max(safeBackoffInitialMs(), backoffMaxMs); }
     public double safeBackoffMultiplier() { return Math.max(1.0, backoffMultiplier); }
     public double safeBackoffJitter() { return Math.min(1.0, Math.max(0.0, backoffJitter)); }
-    public int safeReconcileBatchSize() { return Math.max(1, reconcileBatchSize); }
 }

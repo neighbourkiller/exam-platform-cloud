@@ -16,6 +16,8 @@ public class StartExamResponse {
     private LocalDateTime startTime;
     private LocalDateTime endTime;
     private LocalDateTime deadlineTime;
+    private Long serverEpochMs;
+    private Long deadlineEpochMs;
     private LocalDateTime draftUpdatedAt;
     private String leaseToken;
     private LocalDateTime leaseExpiresAt;

@@ -138,6 +138,25 @@ class OutboxRepositoryMySqlTest {
     }
 
     @Test
+    void acknowledgedRowsAreMarkedPublishedInOneBatchTransaction() {
+        insert("evt-1", "SENDING", 0, "lease-1", "current_timestamp(3)+interval 1 minute");
+        insert("evt-2", "SENDING", 0, "lease-2", "current_timestamp(3)+interval 1 minute");
+
+        int updated = firstRepository.markPublishedBatch(List.of(
+            new OutboxRow("evt-1", "TestEvent", "{}", 0, "lease-1"),
+            new OutboxRow("evt-2", "TestEvent", "{}", 0, "stale-lease")
+        ));
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+            "select status from outbox_event where id='evt-1'", String.class
+        )).isEqualTo("PUBLISHED");
+        assertThat(jdbc.queryForObject(
+            "select status from outbox_event where id='evt-2'", String.class
+        )).isEqualTo("SENDING");
+    }
+
+    @Test
     void cleanupDeletesOnlyExpiredPublishedEvents() {
         properties.setPublishedRetentionMs(1_000);
         insert("old-published", "PUBLISHED", 0, null, null);

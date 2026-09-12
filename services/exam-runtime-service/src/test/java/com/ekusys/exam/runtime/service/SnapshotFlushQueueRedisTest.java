@@ -2,6 +2,9 @@ package com.ekusys.exam.runtime.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.lettuce.core.ClientOptions;
+import io.lettuce.core.SocketOptions;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
@@ -12,6 +15,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 
@@ -34,13 +40,9 @@ class SnapshotFlushQueueRedisTest {
             try {
                 redisContainer = new GenericContainer<>("redis:7.4-alpine")
                     .withCommand(
-                        "redis-server",
-                        "--appendonly", "yes",
-                        "--appendfsync", "everysec",
-                        "--aof-use-rdb-preamble", "yes",
-                        "--save", "3600", "1",
-                        "--save", "300", "100",
-                        "--save", "60", "10000"
+                        "sh", "-c",
+                        "while true; do redis-server --appendonly yes --appendfsync everysec "
+                            + "--aof-use-rdb-preamble yes --save '3600 1 300 100 60 10000'; sleep 0.1; done"
                     )
                     .withExposedPorts(6379);
                 redisContainer.start();
@@ -53,8 +55,23 @@ class SnapshotFlushQueueRedisTest {
         if (host == null) {
             return;
         }
-        connectionFactory = new LettuceConnectionFactory(host, port);
-        connectionFactory.setDatabase(database);
+        connectRedis(host, port, database);
+    }
+
+    private static void connectRedis(String host, int port, int database) {
+        RedisStandaloneConfiguration standalone = new RedisStandaloneConfiguration(host, port);
+        standalone.setDatabase(database);
+        LettuceClientConfiguration client = LettuceClientConfiguration.builder()
+            .commandTimeout(Duration.ofSeconds(2))
+            .shutdownTimeout(Duration.ZERO)
+            .clientOptions(ClientOptions.builder()
+                .autoReconnect(true)
+                .socketOptions(SocketOptions.builder()
+                    .connectTimeout(Duration.ofSeconds(2))
+                    .build())
+                .build())
+            .build();
+        connectionFactory = new LettuceConnectionFactory(standalone, client);
         connectionFactory.afterPropertiesSet();
         connectionFactory.start();
         redis = new StringRedisTemplate(connectionFactory);
@@ -271,9 +288,11 @@ class SnapshotFlushQueueRedisTest {
         first.save(1L, 2L, 100L, payload(100), 3_600_000L);
         redis.getConnectionFactory().getConnection().serverCommands().save();
 
-        redisContainer.getDockerClient()
-            .restartContainerCmd(redisContainer.getContainerId())
-            .exec();
+        redisContainer.execInContainer("redis-cli", "shutdown", "save");
+        awaitRedisContainer();
+        connectionFactory.destroy();
+        connectRedis(redisContainer.getHost(), redisContainer.getMappedPort(6379), 0);
+        first = new SnapshotFlushQueue(redis, fixture.properties, now::get);
         awaitRedis();
         advanceToFlushDue();
 
@@ -295,18 +314,34 @@ class SnapshotFlushQueueRedisTest {
     }
 
     private void awaitRedis() throws Exception {
-        RuntimeException lastFailure = null;
-        for (int attempt = 0; attempt < 50; attempt++) {
-            try {
-                if ("PONG".equals(redis.getConnectionFactory().getConnection().ping())) {
+        Exception lastFailure = null;
+        for (int attempt = 0; attempt < 30; attempt++) {
+            try (RedisConnection connection = redis.getConnectionFactory().getConnection()) {
+                if ("PONG".equals(connection.ping())) {
                     return;
                 }
-            } catch (RuntimeException exception) {
+            } catch (Exception exception) {
                 lastFailure = exception;
             }
-            TimeUnit.MILLISECONDS.sleep(100L);
+            TimeUnit.MILLISECONDS.sleep(150L);
         }
         throw new IllegalStateException("Redis did not recover after restart", lastFailure);
+    }
+
+    private void awaitRedisContainer() throws Exception {
+        for (int attempt = 0; attempt < 40; attempt++) {
+            try {
+                org.testcontainers.containers.Container.ExecResult res =
+                    redisContainer.execInContainer("redis-cli", "ping");
+                if (res != null && res.getStdout() != null && res.getStdout().contains("PONG")) {
+                    return;
+                }
+            } catch (Exception ignored) {
+                // The container process may still be starting.
+            }
+            TimeUnit.MILLISECONDS.sleep(150L);
+        }
+        throw new IllegalStateException("Redis container did not become ready after restart");
     }
 
     private static String value(String property, String environment, String defaultValue) {

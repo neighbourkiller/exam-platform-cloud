@@ -46,6 +46,7 @@ class ExamRuntimeServiceListTest {
             mock(ExamClientLeaseService.class), mock(ExamAnswerInputValidator.class),
             mock(com.ekusys.exam.runtime.repository.TimeoutTaskRepository.class),
             mock(ManualSubmissionService.class), mock(SubmissionFinalPayloadService.class),
+            mock(SubmissionStatusProjectionService.class),
             mock(org.springframework.transaction.support.TransactionTemplate.class)
         );
 

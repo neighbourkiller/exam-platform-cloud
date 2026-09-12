@@ -6,6 +6,7 @@ public record EntryPrepareView(
     Long examId,
     String entryToken,
     LocalDateTime serverTime,
+    Long serverEpochMs,
     LocalDateTime scheduledActivationTime,
     int slot,
     String status

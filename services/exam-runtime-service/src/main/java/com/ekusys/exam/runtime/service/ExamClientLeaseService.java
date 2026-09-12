@@ -5,7 +5,6 @@ import com.ekusys.exam.exam.dto.ExamClientLeaseView;
 import com.ekusys.exam.runtime.config.ClientLeaseProperties;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -176,11 +175,15 @@ public class ExamClientLeaseService {
     /** 租约相关的可配置参数（心跳间隔、超时、持久化间隔） */
     private final ClientLeaseProperties properties;
 
+    private final java.util.concurrent.Executor postCommitExecutor;
+
     public ExamClientLeaseService(JdbcTemplate jdbc, StringRedisTemplate redis,
-                                  ClientLeaseProperties properties) {
+                                  ClientLeaseProperties properties,
+                                  @org.springframework.lang.Nullable @org.springframework.beans.factory.annotation.Qualifier("finalizationPostCommitExecutor") java.util.concurrent.Executor postCommitExecutor) {
         this.jdbc = jdbc;
         this.redis = redis;
         this.properties = properties;
+        this.postCommitExecutor = postCommitExecutor != null ? postCommitExecutor : Runnable::run;
     }
 
     // ==================== 公开方法 ====================
@@ -454,15 +457,21 @@ public class ExamClientLeaseService {
      * @param leaseToken 租约令牌（用于条件删除，防止误删新租约）
      */
     public void clearAfterCommit(Long examId, Long studentId, String leaseToken) {
-        Runnable cleanup = () -> deleteRedisIfToken(examId, studentId, leaseToken);
+        Runnable task = () -> {
+            try {
+                postCommitExecutor.execute(() -> deleteRedisIfToken(examId, studentId, leaseToken));
+            } catch (Exception e) {
+                log.warn("Failed to dispatch client lease clear: examId={}, studentId={}", examId, studentId, e);
+            }
+        };
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            cleanup.run();
+            task.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                cleanup.run();
+                task.run();
             }
         });
     }
@@ -794,17 +803,17 @@ public class ExamClientLeaseService {
     }
 
     /**
-     * LocalDateTime → epoch 毫秒（使用系统默认时区）。
+     * LocalDateTime → epoch 毫秒（使用数据库约定时区）。
      */
     private long epochMillis(LocalDateTime value) {
-        return value.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        return RuntimeTime.epochMillis(value);
     }
 
     /**
-     * epoch 毫秒 → LocalDateTime（使用系统默认时区）。
+     * epoch 毫秒 → LocalDateTime（使用数据库约定时区）。
      */
     private LocalDateTime localDateTime(long epochMillis) {
-        return LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(epochMillis), ZoneId.systemDefault());
+        return RuntimeTime.localDateTime(epochMillis);
     }
 
     /**

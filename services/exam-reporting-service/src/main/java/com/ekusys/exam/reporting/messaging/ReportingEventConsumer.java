@@ -116,6 +116,15 @@ public class ReportingEventConsumer {
             requiredInt(data, "totalScore"), data.path("passFlag").asBoolean(), LocalDateTime.parse(requiredText(data, "submittedAt"))
         );
         Long submissionId = requiredLong(data, "submissionId");
+        jdbc.update(
+            """
+                update rpt_proctoring_student
+                   set session_status='SUBMITTED',submission_status='GRADED',
+                       updated_at=current_timestamp(3)
+                 where exam_id=? and student_id=?
+                """,
+            requiredLong(data, "examId"), requiredLong(data, "studentId")
+        );
         jdbc.update("delete from rpt_objective_answer where submission_id=?", submissionId);
         for (JsonNode result : data.path("questionResults")) {
             jdbc.update(
@@ -129,17 +138,39 @@ public class ReportingEventConsumer {
     private void projectSubmission(JsonNode data) {
         jdbc.update(
             """
-                insert into rpt_student_score(submission_id,exam_id,student_id,status,submitted_at,updated_at)
-                values(?,?,?,?,?,current_timestamp(3))
-                on duplicate key update status=values(status),submitted_at=values(submitted_at),
+                insert into rpt_student_score(
+                    submission_id,exam_id,student_id,status,submitted_at,timeout_submit,
+                    submission_source,runtime_finalized_at,final_snapshot_version,payload_sha256,updated_at
+                ) values(?,?,?,?,?,?,?,?,?,?,current_timestamp(3))
+                on duplicate key update status=case when status='GRADED' then status else values(status) end,
+                    submitted_at=coalesce(submitted_at,values(submitted_at)),
+                    timeout_submit=coalesce(values(timeout_submit),timeout_submit),
+                    submission_source=coalesce(values(submission_source),submission_source),
+                    runtime_finalized_at=coalesce(values(runtime_finalized_at),runtime_finalized_at),
+                    final_snapshot_version=coalesce(values(final_snapshot_version),final_snapshot_version),
+                    payload_sha256=coalesce(values(payload_sha256),payload_sha256),
                     updated_at=current_timestamp(3)
                 """,
             requiredLong(data, "submissionId"), requiredLong(data, "examId"), requiredLong(data, "studentId"),
-            requiredText(data, "status"), LocalDateTime.parse(requiredText(data, "submittedAt"))
+            requiredText(data, "status"), LocalDateTime.parse(requiredText(data, "submittedAt")),
+            nullableBoolean(data, "timeoutSubmit"), nullableText(data, "submissionSource"),
+            nullableDateTime(data, "runtimeFinalizedAt"), nullableLong(data, "finalSnapshotVersion"),
+            nullableText(data, "payloadSha256")
         );
         jdbc.update(
-            "update rpt_proctoring_student set session_status='SUBMITTED',submission_status=?,updated_at=current_timestamp(3) where exam_id=? and student_id=?",
-            requiredText(data, "status"), requiredLong(data, "examId"), requiredLong(data, "studentId")
+            """
+                update rpt_proctoring_student
+                   set session_status='SUBMITTED',
+                       submission_status=case when submission_status='GRADED' then submission_status else ? end,
+                       timeout_submit=coalesce(?,timeout_submit),
+                       submission_source=coalesce(?,submission_source),
+                       runtime_finalized_at=coalesce(?,runtime_finalized_at),
+                       updated_at=current_timestamp(3)
+                 where exam_id=? and student_id=?
+                """,
+            requiredText(data, "status"), nullableBoolean(data, "timeoutSubmit"),
+            nullableText(data, "submissionSource"), nullableDateTime(data, "runtimeFinalizedAt"),
+            requiredLong(data, "examId"), requiredLong(data, "studentId")
         );
     }
 
@@ -184,6 +215,16 @@ public class ReportingEventConsumer {
     private Long nullableLong(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value == null || value.isNull() ? null : value.longValue();
+    }
+
+    private Boolean nullableBoolean(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        return value == null || value.isNull() ? null : value.asBoolean();
+    }
+
+    private LocalDateTime nullableDateTime(JsonNode node, String field) {
+        String value = nullableText(node, field);
+        return value == null || value.isBlank() ? null : LocalDateTime.parse(value);
     }
 
     private int requiredInt(JsonNode node, String field) {

@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.lang.Nullable;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
 
@@ -19,7 +20,8 @@ public class TimeoutSubmissionMetrics {
     private final AtomicLong oldestOverdueMs = new AtomicLong();
 
     public TimeoutSubmissionMetrics(MeterRegistry registry,
-                                    @Qualifier("timeoutSubmissionExecutor") ThreadPoolTaskExecutor executor) {
+                                    @Qualifier("timeoutSubmissionExecutor") ThreadPoolTaskExecutor executor,
+                                    @Nullable @Qualifier("finalizationPostCommitExecutor") ThreadPoolTaskExecutor postCommitExecutor) {
         this.registry = registry;
         backlogGauge("PENDING", pending);
         backlogGauge("PROCESSING", processing);
@@ -29,9 +31,14 @@ public class TimeoutSubmissionMetrics {
             .register(registry);
         Gauge.builder("exam.timeout.submission.worker.active", executor, ThreadPoolTaskExecutor::getActiveCount)
             .register(registry);
-        Gauge.builder("exam.timeout.submission.worker.queue", executor,
-                value -> value.getThreadPoolExecutor().getQueue().size())
+        Gauge.builder("exam.timeout.submission.worker.queue", executor, TimeoutSubmissionMetrics::queueSize)
             .register(registry);
+        if (postCommitExecutor != null) {
+            Gauge.builder("exam.timeout.submission.post_commit.active", postCommitExecutor, ThreadPoolTaskExecutor::getActiveCount)
+                .register(registry);
+            Gauge.builder("exam.timeout.submission.post_commit.queue", postCommitExecutor, TimeoutSubmissionMetrics::queueSize)
+                .register(registry);
+        }
     }
 
     public void increment(String outcome) {
@@ -66,9 +73,23 @@ public class TimeoutSubmissionMetrics {
         oldestOverdueMs.set(backlog.oldestOverdueMs());
     }
 
+    public void recordProjection(String outcome) {
+        registry.counter("exam.submission.projection.events", "outcome", outcome).increment();
+    }
+
+    public void recordStage(String stage, Duration duration) {
+        if (duration != null && !duration.isNegative()) {
+            registry.timer("exam.timeout.submission.stage", "stage", stage).record(duration);
+        }
+    }
+
     private void backlogGauge(String state, AtomicLong value) {
         Gauge.builder("exam.timeout.submission.backlog", value, AtomicLong::get)
             .tag("state", state)
             .register(registry);
+    }
+
+    private static int queueSize(ThreadPoolTaskExecutor executor) {
+        return executor.getThreadPoolExecutor().getQueue().size();
     }
 }

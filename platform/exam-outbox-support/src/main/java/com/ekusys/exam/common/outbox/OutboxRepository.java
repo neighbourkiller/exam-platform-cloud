@@ -3,6 +3,7 @@ package com.ekusys.exam.common.outbox;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -12,6 +13,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Repository
 public class OutboxRepository {
     private static final int MAX_ERROR_LENGTH = 1_000;
+    private static final int MAX_CLAIM_ATTEMPTS = 3;
+    private static final long CLAIM_RETRY_DELAY_MS = 5L;
 
     private final JdbcTemplate jdbc;
     private final OutboxProperties properties;
@@ -26,9 +29,25 @@ public class OutboxRepository {
         this.backoffPolicy = backoffPolicy;
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.requiresNew.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
     public OutboxClaimBatch claimBatch() {
+        TransientDataAccessException lastFailure = null;
+        for (int attempt = 1; attempt <= MAX_CLAIM_ATTEMPTS; attempt++) {
+            try {
+                return claimBatchOnce();
+            } catch (TransientDataAccessException failure) {
+                lastFailure = failure;
+                if (attempt < MAX_CLAIM_ATTEMPTS) {
+                    pauseBeforeClaimRetry(attempt, failure);
+                }
+            }
+        }
+        throw lastFailure;
+    }
+
+    private OutboxClaimBatch claimBatchOnce() {
         return requiresNew.execute(status -> {
             RecoveryCounts recovery = recoverExpiredLeases();
             List<PendingRow> pending = jdbc.query(
@@ -62,6 +81,16 @@ public class OutboxRepository {
         });
     }
 
+    private void pauseBeforeClaimRetry(int attempt, TransientDataAccessException failure) {
+        try {
+            Thread.sleep(CLAIM_RETRY_DELAY_MS * attempt);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            failure.addSuppressed(interrupted);
+            throw failure;
+        }
+    }
+
     public boolean markPublished(OutboxRow row) {
         return jdbc.update(
             "update outbox_event set status='PUBLISHED',published_at=current_timestamp(3),"
@@ -69,6 +98,22 @@ public class OutboxRepository {
                 + "where id=? and status='SENDING' and lease_token=?",
             row.id(), row.leaseToken()
         ) == 1;
+    }
+
+    public int markPublishedBatch(List<OutboxRow> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return 0;
+        }
+        Integer updated = requiresNew.execute(status -> {
+            int count = 0;
+            for (OutboxRow row : rows) {
+                if (markPublished(row)) {
+                    count++;
+                }
+            }
+            return count;
+        });
+        return updated == null ? 0 : updated;
     }
 
     public OutboxFailureResult markFailedAttempt(OutboxRow row, Throwable failure) {

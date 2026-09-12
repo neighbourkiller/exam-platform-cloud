@@ -74,7 +74,7 @@ class ExamActivationTransactionMySqlTest {
         transactions.setTimeout(10);
         RuntimeExamDefinitionRepository definitions = new RuntimeExamDefinitionRepository(jdbc);
         ExamClientLeaseService leases = new ExamClientLeaseService(
-            jdbc, mock(StringRedisTemplate.class), new ClientLeaseProperties()
+            jdbc, mock(StringRedisTemplate.class), new ClientLeaseProperties(), null
         );
         ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
         RuntimeOutboxService outbox = new RuntimeOutboxService(

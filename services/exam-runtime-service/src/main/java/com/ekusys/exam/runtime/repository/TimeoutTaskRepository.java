@@ -16,34 +16,98 @@ public class TimeoutTaskRepository {
     }
 
     public void ensureTask(Long sessionId, Long examId, Long studentId, LocalDateTime dueAt) {
-        jdbc.update(
-            """
-                insert ignore into submission_timeout_task(
-                    id,session_id,exam_id,student_id,due_at,status,created_at,updated_at
-                ) values(?,?,?,?,?,'PENDING',current_timestamp(3),current_timestamp(3))
-                """,
-            sessionId, sessionId, examId, studentId, dueAt
-        );
+        ensureTask(sessionId, examId, studentId, dueAt, null);
     }
 
-    public int reconcileMissingTasks(int limit) {
+    public void ensureTask(Long sessionId, Long examId, Long studentId, LocalDateTime dueAt, Long submissionId) {
+        if (submissionId != null) {
+            jdbc.update(
+                """
+                    insert ignore into submission_timeout_task(
+                        id,session_id,exam_id,student_id,submission_id,due_at,status,created_at,updated_at
+                    ) values(?,?,?,?,?,?,'PENDING',current_timestamp(3),current_timestamp(3))
+                    """,
+                sessionId, sessionId, examId, studentId, submissionId, dueAt
+            );
+        } else {
+            jdbc.update(
+                """
+                    insert ignore into submission_timeout_task(
+                        id,session_id,exam_id,student_id,submission_id,due_at,status,created_at,updated_at
+                    )
+                    select ?,?,?,?,s.id,?,'PENDING',current_timestamp(3),current_timestamp(3)
+                      from exam_session sess
+                      left join submission s on s.exam_id=sess.exam_id and s.student_id=sess.student_id
+                     where sess.id=?
+                    """,
+                sessionId, sessionId, examId, studentId, dueAt, sessionId
+            );
+        }
+    }
+
+    public boolean existsBySession(Long sessionId) {
+        Integer count = jdbc.queryForObject(
+            "select count(*) from submission_timeout_task where session_id=?",
+            Integer.class,
+            sessionId
+        );
+        return count != null && count > 0;
+    }
+
+    public TimeoutHandoffState findHandoffState(Long sessionId) {
+        List<TimeoutHandoffState> rows = jdbc.query(
+            """
+                select s.exam_id,s.student_id,s.status session_status,s.deadline_time,
+                       t.id task_id,t.status task_status,t.due_at,
+                       current_timestamp(3) db_now
+                  from exam_session s
+                  left join submission_timeout_task t on t.session_id=s.id
+                 where s.id=?
+                """,
+            (rs, rowNum) -> new TimeoutHandoffState(
+                rs.getLong("exam_id"),
+                rs.getLong("student_id"),
+                rs.getString("session_status"),
+                rs.getObject("deadline_time", LocalDateTime.class),
+                rs.getObject("task_id", Long.class),
+                rs.getString("task_status"),
+                rs.getObject("due_at", LocalDateTime.class),
+                rs.getObject("db_now", LocalDateTime.class)
+            ),
+            sessionId
+        );
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    public int repairTaskFromSession(Long sessionId) {
         return jdbc.update(
             """
                 insert ignore into submission_timeout_task(
-                    id,session_id,exam_id,student_id,due_at,status,created_at,updated_at
+                    id,session_id,exam_id,student_id,submission_id,due_at,status,created_at,updated_at
                 )
-                select s.id,s.id,s.exam_id,s.student_id,s.deadline_time,'PENDING',
+                select sess.id,sess.id,sess.exam_id,sess.student_id,s.id,sess.deadline_time,'PENDING',
                        current_timestamp(3),current_timestamp(3)
+                  from exam_session sess
+                  left join submission s on s.exam_id=sess.exam_id and s.student_id=sess.student_id
+                 where sess.id=? and sess.deadline_time is not null
+                """,
+            sessionId
+        );
+    }
+
+    public long missingTaskCount() {
+        Long count = jdbc.queryForObject(
+            """
+                select count(*)
                   from exam_session s
                   left join submission_timeout_task t on t.session_id=s.id
                  where t.id is null
                    and s.status in ('ANSWERING','AUTO_SUBMITTING')
                    and s.deadline_time is not null
-                 order by s.id
-                 limit ?
                 """,
-            limit
+            Long.class
         );
+        return count == null ? 0L : count;
     }
 
     public List<TaskCandidate> lockClaimable(int limit) {
@@ -53,6 +117,7 @@ public class TimeoutTaskRepository {
             rs.getLong("session_id"),
             rs.getLong("exam_id"),
             rs.getLong("student_id"),
+            rs.getObject("submission_id", Long.class),
             rs.getObject("due_at", LocalDateTime.class),
             rs.getString("status"),
             rs.getInt("attempt_count"),
@@ -61,7 +126,7 @@ public class TimeoutTaskRepository {
         List<TaskCandidate> candidates = new ArrayList<>(safeLimit);
         candidates.addAll(jdbc.query(
             """
-                select id,session_id,exam_id,student_id,due_at,status,attempt_count,lease_until
+                select id,session_id,exam_id,student_id,submission_id,due_at,status,attempt_count,lease_until
                   from submission_timeout_task
                  where status='PROCESSING' and lease_until<current_timestamp(3)
                  order by lease_until,id
@@ -75,12 +140,11 @@ public class TimeoutTaskRepository {
         if (remaining > 0) {
             candidates.addAll(jdbc.query(
                 """
-                    select id,session_id,exam_id,student_id,due_at,status,attempt_count,lease_until
-                      from submission_timeout_task
+                    select id,session_id,exam_id,student_id,submission_id,due_at,status,attempt_count,lease_until
+                      from submission_timeout_task force index (idx_timeout_task_claim)
                      where status='PENDING'
-                       and due_at<=current_timestamp(3)
-                       and (next_retry_at is null or next_retry_at<=current_timestamp(3))
-                     order by due_at,id
+                       and available_at<=current_timestamp(3)
+                     order by available_at,id
                      limit ?
                      for update skip locked
                     """,
@@ -105,6 +169,19 @@ public class TimeoutTaskRepository {
         );
     }
 
+    public int renewLease(Long taskId, String claimToken, long leaseMs) {
+        return jdbc.update(
+            """
+                update submission_timeout_task
+                   set lease_until=timestampadd(microsecond,?,current_timestamp(3)),
+                       updated_at=current_timestamp(3)
+                 where id=? and status='PROCESSING' and claim_token=?
+                   and lease_until>current_timestamp(3)
+                """,
+            leaseMs * 1_000L, taskId, claimToken
+        );
+    }
+
     public int claimSessionForTimeout(Long sessionId) {
         return jdbc.update(
             """
@@ -122,8 +199,8 @@ public class TimeoutTaskRepository {
     public TaskRow lockBySession(Long sessionId) {
         List<TaskRow> rows = jdbc.query(
             """
-                select id,session_id,exam_id,student_id,due_at,status,claim_token,
-                       lease_until,attempt_count,next_retry_at
+                select id,session_id,exam_id,student_id,submission_id,due_at,status,claim_token,
+                       lease_until,attempt_count,next_retry_at,current_timestamp(3) db_now
                   from submission_timeout_task
                  where session_id=?
                  for update
@@ -133,12 +210,14 @@ public class TimeoutTaskRepository {
                 rs.getLong("session_id"),
                 rs.getLong("exam_id"),
                 rs.getLong("student_id"),
+                rs.getObject("submission_id", Long.class),
                 rs.getObject("due_at", LocalDateTime.class),
                 rs.getString("status"),
                 rs.getString("claim_token"),
                 rs.getObject("lease_until", LocalDateTime.class),
                 rs.getInt("attempt_count"),
-                rs.getObject("next_retry_at", LocalDateTime.class)
+                rs.getObject("next_retry_at", LocalDateTime.class),
+                rs.getObject("db_now", LocalDateTime.class)
             ),
             sessionId
         );
@@ -148,8 +227,8 @@ public class TimeoutTaskRepository {
     public TaskRow lockById(Long taskId) {
         List<TaskRow> rows = jdbc.query(
             """
-                select id,session_id,exam_id,student_id,due_at,status,claim_token,
-                       lease_until,attempt_count,next_retry_at
+                select id,session_id,exam_id,student_id,submission_id,due_at,status,claim_token,
+                       lease_until,attempt_count,next_retry_at,current_timestamp(3) db_now
                   from submission_timeout_task
                  where id=?
                  for update
@@ -159,16 +238,33 @@ public class TimeoutTaskRepository {
                 rs.getLong("session_id"),
                 rs.getLong("exam_id"),
                 rs.getLong("student_id"),
+                rs.getObject("submission_id", Long.class),
                 rs.getObject("due_at", LocalDateTime.class),
                 rs.getString("status"),
                 rs.getString("claim_token"),
                 rs.getObject("lease_until", LocalDateTime.class),
                 rs.getInt("attempt_count"),
-                rs.getObject("next_retry_at", LocalDateTime.class)
+                rs.getObject("next_retry_at", LocalDateTime.class),
+                rs.getObject("db_now", LocalDateTime.class)
             ),
             taskId
         );
         return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    public int backfillSubmissionId(Long taskId, Long submissionId) {
+        return jdbc.update(
+            "update submission_timeout_task set submission_id=?, updated_at=current_timestamp(3) where id=? and submission_id is null",
+            submissionId, taskId
+        );
+    }
+
+    public long nullSubmissionIdCount() {
+        Long count = jdbc.queryForObject(
+            "select count(*) from submission_timeout_task where submission_id is null",
+            Long.class
+        );
+        return count == null ? 0L : count;
     }
 
     public SessionState lockSession(Long sessionId) {
@@ -257,18 +353,63 @@ public class TimeoutTaskRepository {
     }
 
     public int markFailure(Long taskId, String claimToken, LocalDateTime nextRetryAt,
-                           int maxAttempts, String lastError) {
+                           int maxAttempts, String lastError, String failureCode,
+                           String incidentId) {
         return jdbc.update(
             """
                 update submission_timeout_task
                    set status=case when attempt_count>=? then 'FAILED' else 'PENDING' end,
                        next_retry_at=case when attempt_count>=? then null else ? end,
-                       last_error=?,claim_token=null,lease_until=null,updated_at=current_timestamp(3)
+                       last_error=?,failure_code=case when attempt_count>=? then ? else null end,
+                       incident_id=case when attempt_count>=? then ? else null end,
+                       failed_at=case when attempt_count>=? then current_timestamp(3) else null end,
+                       claim_token=null,lease_until=null,updated_at=current_timestamp(3)
                  where id=? and status='PROCESSING' and claim_token=?
                    and lease_until>current_timestamp(3)
                 """,
-            maxAttempts, maxAttempts, nextRetryAt, abbreviate(lastError), taskId, claimToken
+            maxAttempts, maxAttempts, nextRetryAt, abbreviate(lastError),
+            maxAttempts, failureCode, maxAttempts, incidentId, maxAttempts,
+            taskId, claimToken
         );
+    }
+
+    public int markSessionSubmissionFailed(Long sessionId) {
+        return jdbc.update(
+            """
+                update exam_session s
+                join submission sub on sub.exam_id=s.exam_id and sub.student_id=s.student_id
+                left join submission_final_payload fp on fp.submission_id=sub.id
+                   set s.status='SUBMISSION_FAILED',s.claim_time=null,
+                       s.end_time=current_timestamp(3),s.active_client_id=null,
+                       s.active_client_token=null,s.active_client_lease_until=null,
+                       s.active_client_last_seen=null,s.update_time=current_timestamp(3)
+                 where s.id=? and s.status='AUTO_SUBMITTING'
+                   and sub.status='IN_PROGRESS' and fp.submission_id is null
+                   and not exists (
+                       select 1 from outbox_event o
+                        where o.aggregate_type='SUBMISSION' and o.aggregate_id=cast(sub.id as char)
+                          and o.event_type='SubmissionAccepted'
+                   )
+                """,
+            sessionId
+        );
+    }
+
+    public long inconsistentStateCount() {
+        Long count = jdbc.queryForObject(
+            """
+                select count(*)
+                  from submission_timeout_task t
+                  join exam_session s on s.id=t.session_id
+                  join submission sub on sub.exam_id=s.exam_id and sub.student_id=s.student_id
+                 where (t.status='FAILED' and s.status in ('ANSWERING','AUTO_SUBMITTING'))
+                    or (s.status='SUBMISSION_FAILED' and t.status<>'FAILED')
+                    or (t.status='DONE' and (s.status<>'SUBMITTED' or sub.status='IN_PROGRESS'))
+                    or (t.status='PROCESSING' and (t.claim_token is null or t.lease_until is null))
+                """,
+            Long.class
+        );
+        return count == null ? 0L : count;
     }
 
     public int markInvalidStateFailed(Long taskId, String claimToken, String lastError) {
@@ -276,7 +417,8 @@ public class TimeoutTaskRepository {
             """
                 update submission_timeout_task
                    set status='FAILED',next_retry_at=null,last_error=?,claim_token=null,
-                       lease_until=null,updated_at=current_timestamp(3)
+                       lease_until=null,failure_code='INVALID_SESSION_STATE',incident_id=uuid(),
+                       failed_at=current_timestamp(3),updated_at=current_timestamp(3)
                  where id=? and status='PROCESSING' and claim_token=?
                    and lease_until>current_timestamp(3)
                 """,
@@ -289,7 +431,8 @@ public class TimeoutTaskRepository {
             """
                 update submission_timeout_task
                    set status='FAILED',next_retry_at=null,last_error=?,claim_token=null,
-                       lease_until=null,updated_at=current_timestamp(3)
+                       lease_until=null,failure_code='LEASE_ATTEMPTS_EXHAUSTED',incident_id=uuid(),
+                       failed_at=current_timestamp(3),updated_at=current_timestamp(3)
                  where id=? and status in ('PENDING','PROCESSING') and attempt_count>=?
                 """,
             abbreviate(lastError), taskId, maxAttempts
@@ -325,17 +468,30 @@ public class TimeoutTaskRepository {
     }
 
     public record TaskCandidate(Long id, Long sessionId, Long examId, Long studentId,
-                                LocalDateTime dueAt, String status, int attemptCount,
-                                LocalDateTime leaseUntil) {
+                                Long submissionId, LocalDateTime dueAt, String status,
+                                int attemptCount, LocalDateTime leaseUntil) {
+        public TaskCandidate(Long id, Long sessionId, Long examId, Long studentId,
+                             LocalDateTime dueAt, String status, int attemptCount,
+                             LocalDateTime leaseUntil) {
+            this(id, sessionId, examId, studentId, null, dueAt, status, attemptCount, leaseUntil);
+        }
+
         public boolean recoveredLease() {
             return "PROCESSING".equals(status);
         }
     }
 
     public record TaskRow(Long id, Long sessionId, Long examId, Long studentId,
-                          LocalDateTime dueAt, String status, String claimToken,
-                          LocalDateTime leaseUntil, int attemptCount,
-                          LocalDateTime nextRetryAt) {
+                          Long submissionId, LocalDateTime dueAt, String status,
+                          String claimToken, LocalDateTime leaseUntil, int attemptCount,
+                          LocalDateTime nextRetryAt, LocalDateTime dbNow) {
+        public TaskRow(Long id, Long sessionId, Long examId, Long studentId,
+                       LocalDateTime dueAt, String status, String claimToken,
+                       LocalDateTime leaseUntil, int attemptCount,
+                       LocalDateTime nextRetryAt) {
+            this(id, sessionId, examId, studentId, null, dueAt, status, claimToken, leaseUntil, attemptCount, nextRetryAt, null);
+        }
+
         public boolean ownedBy(String token) {
             return "PROCESSING".equals(status) && token != null && token.equals(claimToken);
         }
@@ -343,6 +499,23 @@ public class TimeoutTaskRepository {
 
     public record SessionState(Long id, Long examId, Long studentId,
                                String status, LocalDateTime deadline) {
+    }
+
+    public record TimeoutHandoffState(Long examId, Long studentId, String sessionStatus,
+                                      LocalDateTime deadline, Long taskId, String taskStatus,
+                                      LocalDateTime dueAt, LocalDateTime dbNow) {
+        public boolean isDurablyDue(Long expectedExamId, Long expectedStudentId) {
+            return taskId != null
+                && expectedExamId.equals(examId)
+                && expectedStudentId.equals(studentId)
+                && "ANSWERING".equals(sessionStatus)
+                && "PENDING".equals(taskStatus)
+                && deadline != null
+                && dueAt != null
+                && dbNow != null
+                && !deadline.isAfter(dbNow)
+                && !dueAt.isAfter(dbNow);
+        }
     }
 
     public record TimeoutSubmissionBacklog(long pending, long processing,

@@ -27,56 +27,59 @@ public class ExamSnapshotService {
     private final ObjectMapper objectMapper;
     private final SnapshotProperties properties;
     private final SnapshotPersistenceService persistence;
+    private final SnapshotDraftPayloadService draftPayloads;
+    private final java.util.concurrent.Executor postCommitExecutor;
 
     public ExamSnapshotService(SnapshotFlushQueue queue, ObjectMapper objectMapper,
-                               SnapshotProperties properties, SnapshotPersistenceService persistence) {
+                               SnapshotProperties properties, SnapshotPersistenceService persistence,
+                               SnapshotDraftPayloadService draftPayloads,
+                               @org.springframework.lang.Nullable @org.springframework.beans.factory.annotation.Qualifier("finalizationPostCommitExecutor") java.util.concurrent.Executor postCommitExecutor) {
         this.queue = queue;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.persistence = persistence;
+        this.draftPayloads = draftPayloads;
+        this.postCommitExecutor = postCommitExecutor != null ? postCommitExecutor : Runnable::run;
     }
 
     public SnapshotAckView save(Long examId, Long studentId, Long sessionId,
                                 LocalDateTime deadline, LocalDateTime receivedAt,
                                 SnapshotRequest request) {
-        long version = resolveVersion(request, receivedAt);
+        SnapshotDraftPayloadService.Acceptance acceptance = draftPayloads.accept(
+            sessionId, examId, studentId, request
+        );
+        long version = acceptance.storedClientSequence();
+        if (!acceptance.accepted()) {
+            return ack(request, acceptance);
+        }
         SnapshotPayload payload = new SnapshotPayload(
             examId, studentId, request.getAnswers(), request.getClientTimestamp(), version,
-            receivedAt.toString()
+            acceptance.acceptedAt().toString()
         );
         String json = serialize(payload);
-        Long result;
         try {
-            result = queue.save(
-                examId, studentId, version, json, resolveTtl(deadline, receivedAt).toMillis()
+            queue.save(
+                examId, studentId, version, json,
+                resolveTtl(acceptance.deadline(), acceptance.acceptedAt()).toMillis()
             );
         } catch (DataAccessException exception) {
-            log.warn("Redis snapshot unavailable, fallback to MySQL: examId={}, studentId={}, version={}",
+            log.warn("Redis snapshot cache unavailable after durable MySQL accept: examId={}, studentId={}, version={}",
                 examId, studentId, version, exception);
-            long storedVersion = persistence.persistFallback(
-                sessionId, examId, studentId, request.getAnswers(), version, receivedAt
-            );
-            if (storedVersion < 0) {
-                throw new BusinessException("考试会话已结束");
-            }
-            return ack(request, receivedAt, storedVersion);
         }
-        if (result == null) {
-            log.warn("Redis snapshot script returned no result, fallback to MySQL: examId={}, studentId={}, version={}",
-                examId, studentId, version);
-            long storedVersion = persistence.persistFallback(
-                sessionId, examId, studentId, request.getAnswers(), version, receivedAt
-            );
-            if (storedVersion < 0) {
-                throw new BusinessException("考试会话已结束");
-            }
-            return ack(request, receivedAt, storedVersion);
-        }
-        long storedVersion = Math.abs(result);
-        return ack(request, receivedAt, storedVersion);
+        return ack(request, acceptance);
     }
 
     public SnapshotDraft loadLatestDraft(Long examId, Long studentId) {
+        return loadLatestDraft(examId, studentId, null);
+    }
+
+    public SnapshotDraft loadLatestDraft(Long examId, Long studentId, Long submissionId) {
+        SnapshotDraft durable = submissionId != null
+            ? draftPayloads.loadLatestBySubmissionId(submissionId)
+            : draftPayloads.loadLatest(examId, studentId);
+        if (durable != null) {
+            return durable;
+        }
         SnapshotPersistenceService.SubmissionDraftMetadata metadata =
             persistence.loadDraftMetadata(examId, studentId);
         try {
@@ -106,15 +109,21 @@ public class ExamSnapshotService {
     }
 
     public void clearAfterCommit(Long examId, Long studentId) {
-        Runnable cleanup = () -> clear(examId, studentId);
+        Runnable task = () -> {
+            try {
+                postCommitExecutor.execute(() -> clear(examId, studentId));
+            } catch (Exception e) {
+                log.warn("Failed to dispatch snapshot clear: examId={}, studentId={}", examId, studentId, e);
+            }
+        };
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            cleanup.run();
+            task.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                cleanup.run();
+                task.run();
             }
         });
     }
@@ -135,16 +144,6 @@ public class ExamSnapshotService {
         return Duration.between(now, deadline).plus(retention);
     }
 
-    private long resolveVersion(SnapshotRequest request, LocalDateTime receivedAt) {
-        if (request.getSnapshotVersion() != null && request.getSnapshotVersion() > 0) {
-            return request.getSnapshotVersion();
-        }
-        if (request.getClientTimestamp() != null && request.getClientTimestamp() > 0) {
-            return request.getClientTimestamp();
-        }
-        return java.sql.Timestamp.valueOf(receivedAt).getTime();
-    }
-
     private String serialize(SnapshotPayload payload) {
         try {
             return objectMapper.writeValueAsString(payload);
@@ -153,11 +152,17 @@ public class ExamSnapshotService {
         }
     }
 
-    private SnapshotAckView ack(SnapshotRequest request, LocalDateTime receivedAt, long version) {
+    private SnapshotAckView ack(SnapshotRequest request,
+                                SnapshotDraftPayloadService.Acceptance acceptance) {
         return SnapshotAckView.builder()
-            .serverReceivedAt(receivedAt)
+            .serverReceivedAt(acceptance.acceptedAt())
             .clientTimestamp(request.getClientTimestamp())
-            .snapshotVersion(version)
+            .snapshotVersion(acceptance.storedClientSequence())
+            .accepted(acceptance.accepted())
+            .serverRevision(acceptance.serverRevision())
+            .storedClientSequence(acceptance.storedClientSequence())
+            .serverEpochMs(RuntimeTime.epochMillis(acceptance.acceptedAt()))
+            .deadlineEpochMs(RuntimeTime.epochMillis(acceptance.deadline()))
             .build();
     }
 

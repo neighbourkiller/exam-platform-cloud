@@ -1,12 +1,12 @@
 package com.ekusys.exam.runtime.entry;
 
 import com.ekusys.exam.runtime.config.ExamEntryProperties;
+import com.ekusys.exam.runtime.service.RuntimeTime;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -133,11 +133,11 @@ public class ExamEntryTicketService {
     }
 
     private long epochMillis(LocalDateTime value) {
-        return value.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        return RuntimeTime.epochMillis(value);
     }
 
     private LocalDateTime localDateTime(long value) {
-        return LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(value), ZoneId.systemDefault());
+        return RuntimeTime.localDateTime(value);
     }
 
     public record EntryTicket(String token, Long examId, Long studentId, String clientId,
