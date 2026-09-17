@@ -1,0 +1,32 @@
+{
+  "metrics": {
+    "timeout_submission_completion_latency": {
+      "avg": 12000,
+      "p(90)": 18000,
+      "p(99)": 30000,
+      "max": 50000,
+      "thresholds": {
+        "p(99)<45000": false,
+        "max<60000": false
+      }
+    },
+    "timeout_submission_incomplete": {
+      "count": 0,
+      "thresholds": { "count==0": false }
+    },
+    "iterations": {
+      "count": 4,
+      "thresholds": { "count==4": false }
+    },
+    "checks": {
+      "passes": 4,
+      "fails": 0,
+      "value": 1,
+      "thresholds": { "rate==1": false }
+    },
+    "http_req_failed": {
+      "fails": 0,
+      "rate": 0
+    }
+  }
+}

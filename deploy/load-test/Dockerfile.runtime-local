@@ -1,4 +1,6 @@
 FROM eclipse-temurin:21-jre
 
-COPY deploy/load-test/.runtime-image/app.jar /app/app.jar
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+COPY deploy/load-test/.runtime-image/ /app/runtime/
+COPY deploy/load-test/runtime-entrypoint.sh /app/runtime-entrypoint.sh
+RUN chmod 0555 /app/runtime-entrypoint.sh
+ENTRYPOINT ["/app/runtime-entrypoint.sh"]

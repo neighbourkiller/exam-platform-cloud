@@ -49,6 +49,24 @@ MySQL。不得删除这个首次等待来获取更好的“客户端观察延迟
 压测诊断可用 `POLL_BASE_MS`、`POLL_MAX_MS` 显式覆盖轮询窗口；报告元数据会记录实际值。
 覆盖值只用于对照实验，不能替代与前端当前策略一致的默认场景放行证据。
 
+## 确定性接管机制测试
+
+`run-timeout-deterministic-takeover.sh` 按固定顺序执行四轮 200 会话机制测试：
+领取后杀两轮（`CLAIM_HELD`），随后续租后杀两轮（`RENEW_SUCCEEDED`）。每轮使用
+唯一考试 ID、隔离观察附加 JAR 和真实 Runtime 容器；只有首轮构建当前候选镜像，后续
+轮次复用同一镜像。脚本会在每轮封存目标任务的初始/恢复领取、令牌指纹、租约、kill、
+最终化、采样和数据库终态证据；机制证据失败时停止后续轮次。
+
+```bash
+JAVA_HOME=/path/to/jdk-21 \
+PATH=/path/to/jdk-21/bin:$PATH \
+DB_P99_GATE_SECONDS=45 DB_MAX_GATE_SECONDS=60 \
+bash deploy/load-test/run-timeout-deterministic-takeover.sh
+```
+
+机制轮的 SLA 结果仍原样写入各轮 `gate-result.json`，但人工阻塞轮不能替代自然负载
+容量证明；主环境 `APP_TIMEOUT_SUBMISSION_V2_ENABLED` 不会由该脚本开启。
+
 默认 `LOAD_FLOW=status_only` 验证网络恢复、刷新页面等只查询权威状态的路径；另需执行
 `LOAD_FLOW=deadline_submit`，在截止时先按前端协议调用一次 `POST /submit`，仅在服务端
 尚未最终化时继续轮询。优化后的前端使用 `LOAD_FLOW=deadline_status_first`：先按默认抖动

@@ -25,6 +25,7 @@ import com.ekusys.exam.runtime.api.GradingSubmissionInput;
 import com.ekusys.exam.runtime.client.ManagementRuntimeClient;
 import com.ekusys.exam.runtime.messaging.RuntimeOutboxService;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository;
+import com.ekusys.exam.runtime.observation.TimeoutSubmissionObservation;
 import com.ekusys.exam.runtime.service.ManualSubmissionService.ManualSubmissionResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
@@ -32,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,7 +54,9 @@ public class ExamRuntimeService {
     private final SubmissionFinalPayloadService finalPayloads;
     private final SubmissionStatusProjectionService projectionService;
     private final TransactionTemplate transactions;
+    private final TimeoutSubmissionObservation observation;
 
+    @Autowired
     public ExamRuntimeService(JdbcTemplate jdbc, ManagementRuntimeClient management,
                               ObjectMapper mapper, RuntimeOutboxService outbox,
                               TimeoutSubmissionService timeoutSubmissionService,
@@ -63,7 +67,8 @@ public class ExamRuntimeService {
                               ManualSubmissionService manualSubmissionService,
                               SubmissionFinalPayloadService finalPayloads,
                               SubmissionStatusProjectionService projectionService,
-                              TransactionTemplate transactions) {
+                              TransactionTemplate transactions,
+                              TimeoutSubmissionObservation observation) {
         this.jdbc = jdbc;
         this.management = management;
         this.mapper = mapper;
@@ -77,6 +82,23 @@ public class ExamRuntimeService {
         this.finalPayloads = finalPayloads;
         this.projectionService = projectionService;
         this.transactions = transactions;
+        this.observation = observation == null ? TimeoutSubmissionObservation.NOOP : observation;
+    }
+
+    public ExamRuntimeService(JdbcTemplate jdbc, ManagementRuntimeClient management,
+                              ObjectMapper mapper, RuntimeOutboxService outbox,
+                              TimeoutSubmissionService timeoutSubmissionService,
+                              ExamSnapshotService snapshotService,
+                              ExamClientLeaseService clientLeaseService,
+                              ExamAnswerInputValidator answerInputValidator,
+                              TimeoutTaskRepository timeoutTasks,
+                              ManualSubmissionService manualSubmissionService,
+                              SubmissionFinalPayloadService finalPayloads,
+                              SubmissionStatusProjectionService projectionService,
+                              TransactionTemplate transactions) {
+        this(jdbc, management, mapper, outbox, timeoutSubmissionService, snapshotService,
+            clientLeaseService, answerInputValidator, timeoutTasks, manualSubmissionService,
+            finalPayloads, projectionService, transactions, TimeoutSubmissionObservation.NOOP);
     }
 
     public List<StudentExamView> listStudent() {
@@ -284,17 +306,18 @@ public class ExamRuntimeService {
     }
 
     public SubmissionStatusView submissionStatus(Long examId) {
+        long startedNanos = System.nanoTime();
         Long userId = requireUser();
         // 1 & 2. Check Redis derived projection first
         SubmissionStatusView cached = projectionService.getCachedProjection(examId, userId);
         if (cached != null) {
-            return cached;
+            return observeStatus(examId, userId, "FINAL_PROJECTION_CACHE", cached, startedNanos);
         }
 
         // Check in-flight projection to prevent DB connection exhaustion during timeout storm
         SubmissionStatusView inflight = projectionService.getInflightProjection(examId, userId);
         if (inflight != null) {
-            return inflight;
+            return observeStatus(examId, userId, "INFLIGHT_CACHE", inflight, startedNanos);
         }
 
         // 3. Fallback: single-table query on exam_session
@@ -326,7 +349,7 @@ public class ExamRuntimeService {
                 .retryable(true)
                 .build();
             projectionService.recordInflightProjection(examId, userId, view);
-            return view;
+            return observeStatus(examId, userId, "DATABASE_FALLBACK", view, startedNanos);
         }
 
         // 5. SUBMITTED: query submission and final payload, construct view and asynchronously backfill Redis
@@ -368,7 +391,7 @@ public class ExamRuntimeService {
                     .finalizedAt(sub.finalizedAt())
                     .build();
                 projectionService.refreshProjectionAsync(examId, userId, view);
-                return view;
+                return observeStatus(examId, userId, "DATABASE_FALLBACK", view, startedNanos);
             }
         }
 
@@ -407,7 +430,7 @@ public class ExamRuntimeService {
                     submissionStatus = failed.submissionStatus();
                 }
             }
-            return SubmissionStatusView.builder()
+            SubmissionStatusView view = SubmissionStatusView.builder()
                 .submissionId(submissionId)
                 .sessionStatus(sessionStatus)
                 .submissionStatus(submissionStatus)
@@ -419,10 +442,11 @@ public class ExamRuntimeService {
                 .incidentId(incidentId)
                 .retryable(false)
                 .build();
+            return observeStatus(examId, userId, "DATABASE_FALLBACK", view, startedNanos);
         }
 
         // Fallback for other states (PREPARED, WAITING, CANCELLED, etc.)
-        return SubmissionStatusView.builder()
+        SubmissionStatusView view = SubmissionStatusView.builder()
             .sessionStatus(sessionStatus)
             .submissionStatus("IN_PROGRESS")
             .timeoutTaskStatus(null)
@@ -431,6 +455,20 @@ public class ExamRuntimeService {
             .serverEpochMs(RuntimeTime.epochMillis(dbNow))
             .retryable(true)
             .build();
+        return observeStatus(examId, userId, "DATABASE_FALLBACK", view, startedNanos);
+    }
+
+    private SubmissionStatusView observeStatus(Long examId, Long studentId, String source,
+                                               SubmissionStatusView view, long startedNanos) {
+        try {
+            observation.onStatusLookup(
+                examId, studentId, source, Boolean.TRUE.equals(view.getRuntimeFinalized()),
+                System.nanoTime() - startedNanos
+            );
+        } catch (RuntimeException exception) {
+            // Status observation is diagnostic-only and cannot change a response.
+        }
+        return view;
     }
 
     private SubmitResultView submitLegacy(Long examId, Long userId, SubmitExamRequest request) {

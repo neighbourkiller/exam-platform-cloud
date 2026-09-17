@@ -1,9 +1,11 @@
 package com.ekusys.exam.runtime.config;
 
+import com.ekusys.exam.runtime.observation.TimeoutSubmissionObservation;
 import java.util.concurrent.ThreadPoolExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -15,10 +17,18 @@ public class TimeoutSubmissionConfiguration {
     private static final Logger log = LoggerFactory.getLogger(TimeoutSubmissionConfiguration.class);
 
     @Bean
+    @ConditionalOnMissingBean(TimeoutSubmissionObservation.class)
+    TimeoutSubmissionObservation timeoutSubmissionObservation() {
+        return TimeoutSubmissionObservation.NOOP;
+    }
+
+    @Bean
     ApplicationRunner timeoutSubmissionModeReporter(TimeoutSubmissionProperties properties) {
         return arguments -> log.info(
-            "Timeout submission initialized: mode={}, claimSize={}, workerCount={}, leaseMs={}, leaseRenewIntervalMs={}, taskTimeoutMs={}, maxRunMs={}, maxAttempts={}, backlogRefreshIntervalMs={}",
+            "Timeout submission initialized: mode={}, claimStrategy={}, crossShardDelayMs={}, claimSize={}, workerCount={}, leaseMs={}, leaseRenewIntervalMs={}, taskTimeoutMs={}, maxRunMs={}, maxAttempts={}, backlogRefreshIntervalMs={}",
             properties.isEnabled() ? "V2" : "V1",
+            properties.isEnabled() ? "shard-first+cross-shard-recovery" : "fixed-shard-scan",
+            properties.safeCrossShardDelayMs(),
             properties.safeClaimSize(),
             properties.safeWorkerCount(),
             properties.safeLeaseMs(),

@@ -9,6 +9,7 @@ import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.SessionState;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TaskCandidate;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TaskRow;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TimeoutHandoffState;
+import com.ekusys.exam.runtime.observation.TimeoutSubmissionObservation;
 import com.ekusys.exam.runtime.service.SubmissionFinalPayloadService.EncodedFinalAnswers;
 import java.time.Duration;
 import java.time.Instant;
@@ -30,6 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -54,9 +56,11 @@ public class TimeoutSubmissionCoordinator {
     private final TransactionTemplate claimTransactions;
     private final ThreadPoolTaskExecutor executor;
     private final ThreadPoolTaskScheduler leaseScheduler;
+    private final TimeoutSubmissionObservation observation;
     private final AtomicBoolean jobRunning = new AtomicBoolean();
     private volatile long lastBacklogRefreshNanos = Long.MIN_VALUE;
 
+    @Autowired
     public TimeoutSubmissionCoordinator(
         TimeoutTaskRepository tasks,
         TimeoutSubmissionProperties properties,
@@ -69,7 +73,8 @@ public class TimeoutSubmissionCoordinator {
         JdbcTemplate jdbc,
         TransactionTemplate transactions,
         @Qualifier("timeoutSubmissionExecutor") ThreadPoolTaskExecutor executor,
-        @Qualifier("timeoutSubmissionLeaseScheduler") ThreadPoolTaskScheduler leaseScheduler
+        @Qualifier("timeoutSubmissionLeaseScheduler") ThreadPoolTaskScheduler leaseScheduler,
+        TimeoutSubmissionObservation observation
     ) {
         this.tasks = tasks;
         this.properties = properties;
@@ -90,29 +95,57 @@ public class TimeoutSubmissionCoordinator {
         this.claimTransactions.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         this.executor = executor;
         this.leaseScheduler = leaseScheduler;
+        this.observation = observation == null ? TimeoutSubmissionObservation.NOOP : observation;
     }
 
-    public int processDue() {
+    public TimeoutSubmissionCoordinator(
+        TimeoutTaskRepository tasks,
+        TimeoutSubmissionProperties properties,
+        TimeoutSubmissionBackoffPolicy backoff,
+        TimeoutSubmissionMetrics metrics,
+        ExamSnapshotService snapshots,
+        SubmissionFinalPayloadService finalPayloads,
+        RuntimeOutboxService outbox,
+        SubmissionStatusProjectionService projectionService,
+        JdbcTemplate jdbc,
+        TransactionTemplate transactions,
+        @Qualifier("timeoutSubmissionExecutor") ThreadPoolTaskExecutor executor,
+        @Qualifier("timeoutSubmissionLeaseScheduler") ThreadPoolTaskScheduler leaseScheduler
+    ) {
+        this(tasks, properties, backoff, metrics, snapshots, finalPayloads, outbox,
+            projectionService, jdbc, transactions, executor, leaseScheduler,
+            TimeoutSubmissionObservation.NOOP);
+    }
+
+    public int processDue(int shardIndex, int shardTotal) {
+        validateShard(shardIndex, shardTotal);
         if (!jobRunning.compareAndSet(false, true)) {
             metrics.increment("job_overlap");
             return 0;
         }
         try {
-            return processDueWithinBudget();
+            return processDueWithinBudget(shardIndex, shardTotal);
         } finally {
             jobRunning.set(false);
         }
     }
 
-    private int processDueWithinBudget() {
+    private int processDueWithinBudget(int shardIndex, int shardTotal) {
         long deadlineNanos = System.nanoTime() + Duration.ofMillis(properties.safeMaxRunMs()).toNanos();
         AtomicInteger completed = new AtomicInteger();
+        AtomicInteger claimed = new AtomicInteger();
+        AtomicInteger ownPending = new AtomicInteger();
+        AtomicInteger crossPending = new AtomicInteger();
+        AtomicInteger ownLeaseRecovered = new AtomicInteger();
+        AtomicInteger crossLeaseRecovered = new AtomicInteger();
 
         while (System.nanoTime() < deadlineNanos) {
-            List<TimeoutTaskClaim> claims = claimBatch();
+            List<TimeoutTaskClaim> claims = claimBatch(shardIndex, shardTotal,
+                ownPending, crossPending, ownLeaseRecovered, crossLeaseRecovered);
             if (claims.isEmpty()) {
                 break;
             }
+            claimed.addAndGet(claims.size());
             List<CompletableFuture<Void>> futures = new ArrayList<>(claims.size());
             try {
                 for (TimeoutTaskClaim claim : claims) {
@@ -141,6 +174,10 @@ public class TimeoutSubmissionCoordinator {
             }
         }
         refreshBacklogIfDue();
+        log.info("Timeout submission round finished: shardIndex={}, shardTotal={}, claimed={}, completed={}, "
+                + "ownPending={}, crossPending={}, ownLeaseRecovered={}, crossLeaseRecovered={}",
+            shardIndex, shardTotal, claimed.get(), completed.get(),
+            ownPending.get(), crossPending.get(), ownLeaseRecovered.get(), crossLeaseRecovered.get());
         return completed.get();
     }
 
@@ -189,9 +226,13 @@ public class TimeoutSubmissionCoordinator {
         return result == null ? "SUBMITTING" : result;
     }
 
-    private List<TimeoutTaskClaim> claimBatch() {
+    private List<TimeoutTaskClaim> claimBatch(int shardIndex, int shardTotal,
+                                              AtomicInteger ownPending, AtomicInteger crossPending,
+                                              AtomicInteger ownLeaseRecovered, AtomicInteger crossLeaseRecovered) {
         List<TimeoutTaskClaim> result = claimTransactions.execute(status -> {
-            List<TaskCandidate> candidates = tasks.lockClaimable(properties.safeClaimSize());
+            TimeoutTaskRepository.ClaimSelection selection = tasks.lockClaimable(
+                shardIndex, shardTotal, properties.safeClaimSize(), properties.safeCrossShardDelayMs());
+            List<TaskCandidate> candidates = selection.candidates();
             List<TimeoutTaskClaim> claims = new ArrayList<>(candidates.size());
             for (TaskCandidate candidate : candidates) {
                 if (candidate.attemptCount() >= properties.safeMaxAttempts()) {
@@ -241,8 +282,22 @@ public class TimeoutSubmissionCoordinator {
                     metrics.increment("invalid_session_state");
                     continue;
                 }
+                boolean ownShard = Math.floorMod(candidate.id(), shardTotal) == shardIndex;
                 if (candidate.recoveredLease()) {
                     metrics.increment("lease_recovered");
+                    if (ownShard) {
+                        metrics.increment("claim_lease_recovered_own");
+                        ownLeaseRecovered.incrementAndGet();
+                    } else {
+                        metrics.increment("claim_lease_recovered_cross");
+                        crossLeaseRecovered.incrementAndGet();
+                    }
+                } else if (ownShard) {
+                    metrics.increment("claim_own_pending");
+                    ownPending.incrementAndGet();
+                } else {
+                    metrics.increment("claim_cross_pending");
+                    crossPending.incrementAndGet();
                 }
                 claims.add(new TimeoutTaskClaim(
                     candidate.id(), candidate.sessionId(), candidate.examId(), candidate.studentId(),
@@ -261,9 +316,13 @@ public class TimeoutSubmissionCoordinator {
         AtomicBoolean leaseLost = new AtomicBoolean();
         Duration renewInterval = Duration.ofMillis(properties.safeLeaseRenewIntervalMs());
         ScheduledFuture<?> renewal = leaseScheduler.scheduleAtFixedRate(
-            () -> renewLease(claim, leaseLost), Instant.now().plus(renewInterval), renewInterval
+            () -> renewLease(claim, leaseLost, started), Instant.now().plus(renewInterval), renewInterval
         );
         try {
+            observe(() -> observation.onClaimProcessingStarted(
+                claim.examId(), claim.taskId(), claim.attempt(), claim.claimToken(),
+                System.nanoTime() - started
+            ), "claim_processing_started", claim.taskId());
             long sDraft = System.nanoTime();
             SnapshotDraft draft = snapshots.loadLatestDraft(claim.examId(), claim.studentId(), claim.submissionId());
             EncodedFinalAnswers encoded = finalPayloads.encode(draft.answers(), draft.version());
@@ -277,6 +336,10 @@ public class TimeoutSubmissionCoordinator {
                 metrics.recordFinalization(Duration.ofNanos(System.nanoTime() - started), "stale");
                 return false;
             }
+            observe(() -> observation.onFinalizationCommitted(
+                claim.examId(), claim.taskId(), claim.attempt(), claim.claimToken(),
+                System.nanoTime() - started
+            ), "finalization_committed", claim.taskId());
             metrics.increment("completed");
             metrics.recordFinalization(Duration.ofNanos(System.nanoTime() - started), "success");
             return true;
@@ -289,18 +352,33 @@ public class TimeoutSubmissionCoordinator {
         }
     }
 
-    private void renewLease(TimeoutTaskClaim claim, AtomicBoolean leaseLost) {
+    private void renewLease(TimeoutTaskClaim claim, AtomicBoolean leaseLost, long startedNanos) {
         try {
             if (tasks.renewLease(claim.taskId(), claim.claimToken(), properties.safeLeaseMs()) != 1) {
                 leaseLost.set(true);
                 metrics.increment("lease_renew_lost");
             } else {
+                observe(() -> observation.onLeaseRenewed(
+                    claim.examId(), claim.taskId(), claim.attempt(), claim.claimToken(),
+                    System.nanoTime() - startedNanos
+                ), "lease_renewed", claim.taskId());
                 metrics.increment("lease_renewed");
             }
         } catch (RuntimeException exception) {
             leaseLost.set(true);
             metrics.increment("lease_renew_failed");
             log.warn("Timeout submission lease renewal failed: taskId={}", claim.taskId(), exception);
+        }
+    }
+
+    private void observe(Runnable callback, String eventType, Long taskId) {
+        try {
+            callback.run();
+        } catch (RuntimeException exception) {
+            // An optional test observer must not change the business result,
+            // transaction outcome, or lease scheduler semantics.
+            log.warn("Timeout submission observation failed: eventType={}, taskId={}",
+                eventType, taskId, exception);
         }
     }
 
@@ -504,6 +582,14 @@ public class TimeoutSubmissionCoordinator {
         } catch (RuntimeException exception) {
             metrics.increment("metrics_unavailable");
             log.debug("Timeout submission backlog metrics unavailable", exception);
+        }
+    }
+
+    private static void validateShard(int shardIndex, int shardTotal) {
+        if (shardTotal < 1 || shardIndex < 0 || shardIndex >= shardTotal) {
+            throw new IllegalArgumentException(
+                "非法超时交卷分片参数: shardIndex=" + shardIndex + ", shardTotal=" + shardTotal
+            );
         }
     }
 

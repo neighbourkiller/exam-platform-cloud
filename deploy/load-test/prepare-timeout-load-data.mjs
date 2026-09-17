@@ -30,6 +30,9 @@ const submissionBase = BigInt(process.env.SUBMISSION_BASE || '900000000000')
 const tokenFile = process.env.TOKENS_FILE
   ? path.resolve(process.env.TOKENS_FILE)
   : path.join(scriptDirectory, `tokens-${examId}.json`)
+const sessionMapFile = process.env.SESSION_MAP_FILE
+  ? path.resolve(process.env.SESSION_MAP_FILE)
+  : path.join(scriptDirectory, `session-map-${examId}.json`)
 const privateKeyFile = process.env.JWT_PRIVATE_KEY_FILE
   ? path.resolve(process.env.JWT_PRIVATE_KEY_FILE)
   : null
@@ -57,6 +60,7 @@ process.stdout.write(
 await seedRedis(answerTemplate)
 await writeTokens(privateKey)
 const deadlineEpochMs = await seedMySql()
+const sessionMap = await writeVerifiedSessionMap()
 
 process.stdout.write(`${JSON.stringify({
   examId,
@@ -64,7 +68,9 @@ process.stdout.write(`${JSON.stringify({
   requestedPayloadBytes: payloadBytes,
   actualPayloadBytes,
   deadlineEpochMs,
-  tokenFile
+  tokenFile,
+  sessionMapFile,
+  targetTaskId: sessionMap.entries[0]?.taskId ?? null
 })}\n`)
 
 function positiveInteger(value, name) {
@@ -370,4 +376,39 @@ SELECT ROUND(UNIX_TIMESTAMP(@due_at)*1000);
     throw new Error(`Invalid deadline returned by MySQL: ${stdout.trim()}`)
   }
   return deadline
+}
+
+async function writeVerifiedSessionMap() {
+  const child = spawn('docker', [
+    ...composeArguments, 'exec', '-T', 'mysql', 'sh', '-c',
+    `mysql -uexam_runtime -p"$EXAM_DB_PASSWORD" -N exam_runtime -e `
+      + `"select id,session_id,student_id from submission_timeout_task `
+      + `where exam_id=${examId} order by student_id,id"`
+  ], { stdio: ['ignore', 'pipe', 'inherit'] })
+  let stdout = ''
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', chunk => { stdout += chunk })
+  const exitCode = await new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', resolve)
+  })
+  if (exitCode !== 0) {
+    throw new Error(`Verified session map query failed with exit code ${exitCode}`)
+  }
+  const entries = stdout.trim().split(/\r?\n/).filter(Boolean).map((line, iteration) => {
+    const [taskId, sessionId, studentId] = line.trim().split(/\s+/)
+    if (!/^\d+$/.test(taskId || '') || !/^\d+$/.test(sessionId || '')
+      || !/^\d+$/.test(studentId || '')) {
+      throw new Error(`Invalid verified session map row: ${line}`)
+    }
+    return { iteration, taskId, sessionId, studentId }
+  })
+  if (entries.length !== users || entries.some((entry, index) => entry.iteration !== index)) {
+    throw new Error(`Verified session map contains ${entries.length}/${users} rows`)
+  }
+  const parent = path.dirname(sessionMapFile)
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 })
+  fs.writeFileSync(sessionMapFile, `${JSON.stringify({ examId, entries }, null, 2)}\n`, { mode: 0o600 })
+  fs.chmodSync(sessionMapFile, 0o600)
+  return { examId, entries }
 }

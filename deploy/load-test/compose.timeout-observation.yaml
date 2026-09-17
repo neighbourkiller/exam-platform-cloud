@@ -1,0 +1,8 @@
+services:
+  runtime-service:
+    environment:
+      TIMEOUT_OBSERVATION_ENABLED: "true"
+      SPRING_PROFILES_ACTIVE: "timeout-observation"
+      TIMEOUT_OBSERVATION_CHECKLIST: "/test-results/observation/control.properties"
+    volumes:
+      - ${TIMEOUT_TEST_RESULT_DIR:?TIMEOUT_TEST_RESULT_DIR is required for observation}:/test-results:rw

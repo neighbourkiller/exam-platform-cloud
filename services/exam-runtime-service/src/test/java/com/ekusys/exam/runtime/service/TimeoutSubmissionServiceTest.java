@@ -2,6 +2,7 @@ package com.ekusys.exam.runtime.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.ekusys.exam.runtime.messaging.RuntimeOutboxService;
@@ -97,13 +99,36 @@ class TimeoutSubmissionServiceTest {
     }
 
     @Test
-    void v2IgnoresFixedShardsAndUsesDurableTaskCoordinator() {
+    void v2PassesShardParametersToDurableTaskCoordinator() {
         properties.setEnabled(true);
-        when(coordinator.processDue()).thenReturn(321);
+        when(coordinator.processDue(1, 3)).thenReturn(321);
 
-        assertEquals(321, service.processShard(7, 12));
+        assertEquals(321, service.processShard(1, 3));
 
-        verify(coordinator).processDue();
+        verify(coordinator).processDue(1, 3);
         verify(mapper, never()).findClaimable(anyInt(), anyInt(), anyInt());
+    }
+
+    @Test
+    void v1StillClaimsWithFixedShards() {
+        when(mapper.findClaimable(1, 3, 200)).thenReturn(List.of());
+
+        assertEquals(0, service.processShard(1, 3));
+
+        verify(mapper).findClaimable(1, 3, 200);
+        verify(coordinator, never()).processDue(anyInt(), anyInt());
+    }
+
+    @Test
+    void invalidShardParametersFailBeforeDatabaseAccess() {
+        assertThrows(IllegalArgumentException.class, () -> service.processShard(-1, 3));
+        assertThrows(IllegalArgumentException.class, () -> service.processShard(3, 3));
+        assertThrows(IllegalArgumentException.class, () -> service.processShard(0, 0));
+        assertThrows(IllegalArgumentException.class, () -> service.processShard(5, -2));
+        verifyNoInteractions(mapper, coordinator);
+
+        properties.setEnabled(true);
+        assertThrows(IllegalArgumentException.class, () -> service.processShard(2, 2));
+        verifyNoInteractions(mapper, coordinator);
     }
 }

@@ -110,7 +110,8 @@ public class TimeoutTaskRepository {
         return count == null ? 0L : count;
     }
 
-    public List<TaskCandidate> lockClaimable(int limit) {
+    public ClaimSelection lockClaimable(int shardIndex, int shardTotal, int limit, long crossShardDelayMs) {
+        validateShard(shardIndex, shardTotal);
         int safeLimit = Math.max(1, limit);
         RowMapper<TaskCandidate> mapper = (rs, rowNum) -> new TaskCandidate(
             rs.getLong("id"),
@@ -123,8 +124,14 @@ public class TimeoutTaskRepository {
             rs.getInt("attempt_count"),
             rs.getObject("lease_until", LocalDateTime.class)
         );
-        List<TaskCandidate> candidates = new ArrayList<>(safeLimit);
-        candidates.addAll(jdbc.query(
+        List<TaskCandidate> selected = new ArrayList<>(safeLimit);
+        int ownPending = 0;
+        int crossPending = 0;
+        int ownLeaseRecovered = 0;
+        int crossLeaseRecovered = 0;
+
+        // 阶段1：全局恢复过期租约，不按分片过滤
+        selected.addAll(jdbc.query(
             """
                 select id,session_id,exam_id,student_id,submission_id,due_at,status,attempt_count,lease_until
                   from submission_timeout_task
@@ -136,23 +143,117 @@ public class TimeoutTaskRepository {
             mapper,
             safeLimit
         ));
-        int remaining = safeLimit - candidates.size();
-        if (remaining > 0) {
-            candidates.addAll(jdbc.query(
+        for (TaskCandidate candidate : selected) {
+            if (Math.floorMod(candidate.id(), shardTotal) == shardIndex) {
+                ownLeaseRecovered += 1;
+            } else {
+                crossLeaseRecovered += 1;
+            }
+        }
+
+        boolean multiShard = shardTotal > 1;
+        int remaining = safeLimit - selected.size();
+        int ownQuota = remaining;
+        if (multiShard) {
+            // 为跨片补领预留 ceil(remaining/2)，本阶段最多领取其余数量
+            int crossReserve = (remaining + 1) / 2;
+            ownQuota = remaining - crossReserve;
+        }
+
+        // 阶段2：优先领取本片已到 available_at 的 PENDING
+        if (ownQuota > 0) {
+            List<TaskCandidate> own = jdbc.query(
                 """
                     select id,session_id,exam_id,student_id,submission_id,due_at,status,attempt_count,lease_until
                       from submission_timeout_task force index (idx_timeout_task_claim)
                      where status='PENDING'
                        and available_at<=current_timestamp(3)
+                       and mod(id, ?) = ?
                      order by available_at,id
                      limit ?
                      for update skip locked
                     """,
                 mapper,
-                remaining
-            ));
+                shardTotal, shardIndex, ownQuota
+            );
+            selected.addAll(own);
+            ownPending += own.size();
         }
-        return List.copyOf(candidates);
+
+        // 阶段3：跨片补领，要求 available_at 已超过兜底等待时间
+        remaining = safeLimit - selected.size();
+        if (multiShard && remaining > 0) {
+            List<TaskCandidate> cross = jdbc.query(
+                """
+                    select id,session_id,exam_id,student_id,submission_id,due_at,status,attempt_count,lease_until
+                      from submission_timeout_task force index (idx_timeout_task_claim)
+                     where status='PENDING'
+                       and available_at<=timestampadd(microsecond, -?, current_timestamp(3))
+                       and mod(id, ?) <> ?
+                     order by available_at,id
+                     limit ?
+                     for update skip locked
+                    """,
+                mapper,
+                crossShardDelayMs * 1_000L, shardTotal, shardIndex, remaining
+            );
+            selected.addAll(cross);
+            crossPending += cross.size();
+        }
+
+        // 阶段4：本片补足，排除本事务已选中的任务（自身行锁不会阻止重复选中）；
+        // 阶段2 配额为零且阶段3 无候选时同样必须执行，保证本片任务不被跨片预留饿死
+        remaining = safeLimit - selected.size();
+        if (multiShard && remaining > 0) {
+            String fillSql;
+            Object[] params;
+            if (selected.isEmpty()) {
+                fillSql = """
+                    select id,session_id,exam_id,student_id,submission_id,due_at,status,attempt_count,lease_until
+                      from submission_timeout_task force index (idx_timeout_task_claim)
+                     where status='PENDING'
+                       and available_at<=current_timestamp(3)
+                       and mod(id, ?) = ?
+                     order by available_at,id
+                     limit ?
+                     for update skip locked
+                    """;
+                params = new Object[] {shardTotal, shardIndex, remaining};
+            } else {
+                String placeholders = String.join(",", java.util.Collections.nCopies(selected.size(), "?"));
+                fillSql = """
+                    select id,session_id,exam_id,student_id,submission_id,due_at,status,attempt_count,lease_until
+                      from submission_timeout_task force index (idx_timeout_task_claim)
+                     where status='PENDING'
+                       and available_at<=current_timestamp(3)
+                       and mod(id, ?) = ?
+                       and id not in (""" + placeholders + """
+                    )
+                     order by available_at,id
+                     limit ?
+                     for update skip locked
+                    """;
+                params = new Object[2 + selected.size() + 1];
+                params[0] = shardTotal;
+                params[1] = shardIndex;
+                for (int index = 0; index < selected.size(); index += 1) {
+                    params[2 + index] = selected.get(index).id();
+                }
+                params[params.length - 1] = remaining;
+            }
+            List<TaskCandidate> fill = jdbc.query(fillSql, mapper, params);
+            selected.addAll(fill);
+            ownPending += fill.size();
+        }
+        return new ClaimSelection(List.copyOf(selected), ownPending, crossPending, ownLeaseRecovered, crossLeaseRecovered);
+    }
+
+    private static void validateShard(int shardIndex, int shardTotal) {
+        if (shardTotal < 1 || shardIndex < 0 || shardIndex >= shardTotal) {
+            throw new IllegalArgumentException(
+                "非法超时交卷分片参数: shardIndex=" + shardIndex + ", shardTotal=" + shardTotal
+            );
+        }
     }
 
     public int markProcessing(Long taskId, String claimToken, long leaseMs) {
@@ -465,6 +566,10 @@ public class TimeoutTaskRepository {
             return null;
         }
         return value.length() <= 1_000 ? value : value.substring(0, 1_000);
+    }
+
+    public record ClaimSelection(List<TaskCandidate> candidates, int ownPending, int crossPending,
+                                 int ownLeaseRecovered, int crossLeaseRecovered) {
     }
 
     public record TaskCandidate(Long id, Long sessionId, Long examId, Long studentId,

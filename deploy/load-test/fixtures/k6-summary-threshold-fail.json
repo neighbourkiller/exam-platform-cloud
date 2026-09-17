@@ -1,0 +1,28 @@
+{
+  "metrics": {
+    "timeout_submission_completion_latency": {
+      "avg": 30000,
+      "p(90)": 50000,
+      "p(99)": 55000,
+      "max": 60001,
+      "thresholds": {
+        "p(99)<45000": true,
+        "max<60000": true
+      }
+    },
+    "timeout_submission_incomplete": {
+      "count": 1,
+      "thresholds": { "count==0": true }
+    },
+    "iterations": {
+      "count": 4,
+      "thresholds": { "count==4": false }
+    },
+    "checks": {
+      "passes": 3,
+      "fails": 1,
+      "value": 0.75,
+      "thresholds": { "rate==1": true }
+    }
+  }
+}

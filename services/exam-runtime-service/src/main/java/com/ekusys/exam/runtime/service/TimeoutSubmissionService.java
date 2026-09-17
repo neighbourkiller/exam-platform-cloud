@@ -40,8 +40,9 @@ public class TimeoutSubmissionService {
     }
 
     public int processShard(int shardIndex, int shardTotal) {
+        validateShard(shardIndex, shardTotal);
         if (properties.isEnabled()) {
-            return coordinator.processDue();
+            return coordinator.processDue(shardIndex, shardTotal);
         }
         int processed = 0;
         List<TimeoutSessionRow> rows = mapper.findClaimable(shardIndex, shardTotal, BATCH_SIZE);
@@ -93,6 +94,14 @@ public class TimeoutSubmissionService {
 
     public boolean isV2Enabled() {
         return properties.isEnabled();
+    }
+
+    private static void validateShard(int shardIndex, int shardTotal) {
+        if (shardTotal < 1 || shardIndex < 0 || shardIndex >= shardTotal) {
+            throw new IllegalArgumentException(
+                "非法超时交卷分片参数: shardIndex=" + shardIndex + ", shardTotal=" + shardTotal
+            );
+        }
     }
 
     public String mode() {

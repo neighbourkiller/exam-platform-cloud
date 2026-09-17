@@ -1,20 +1,25 @@
 package com.ekusys.exam.runtime.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.ekusys.exam.runtime.config.TimeoutSubmissionProperties;
 import com.ekusys.exam.runtime.messaging.RuntimeOutboxService;
+import com.ekusys.exam.runtime.observation.TimeoutSubmissionObservation;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository;
+import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.ClaimSelection;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.SessionState;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TaskCandidate;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TaskRow;
@@ -94,7 +99,7 @@ class TimeoutSubmissionCoordinatorTest {
             1L, 1L, 2L, 3L, dueAt, "PENDING", 0, null
         );
         AtomicReference<String> token = new AtomicReference<>();
-        when(tasks.lockClaimable(1)).thenReturn(List.of(candidate), List.of());
+        when(tasks.lockClaimable(0, 1, 1, 10_000L)).thenReturn(claimSelection(candidate), claimSelection());
         when(tasks.markProcessing(eq(1L), anyString(), eq(30_000L))).thenAnswer(invocation -> {
             token.set(invocation.getArgument(1));
             return 1;
@@ -115,7 +120,7 @@ class TimeoutSubmissionCoordinatorTest {
         when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
             .thenReturn(now);
 
-        int completed = coordinator.processDue();
+        int completed = coordinator.processDue(0, 1);
 
         assertThat(completed).isZero();
         verify(finalPayloads, never()).store(anyLong(), anyString(), any());
@@ -132,12 +137,12 @@ class TimeoutSubmissionCoordinatorTest {
             1L, 1L, 2L, 3L, now.minusMinutes(1), "PROCESSING", 12,
             now.minusSeconds(1)
         );
-        when(tasks.lockClaimable(anyInt())).thenReturn(List.of(candidate));
+        when(tasks.lockClaimable(anyInt(), anyInt(), anyInt(), anyLong())).thenReturn(claimSelection(candidate));
         when(tasks.markAttemptsExhaustedLocked(
             1L, 12, "处理进程连续失联，已达到最大尝试次数"
         )).thenReturn(1);
 
-        int completed = coordinator.processDue();
+        int completed = coordinator.processDue(0, 1);
 
         assertThat(completed).isZero();
         verify(tasks).markAttemptsExhaustedLocked(
@@ -151,22 +156,22 @@ class TimeoutSubmissionCoordinatorTest {
     void claimCountIsBoundedByWorkerCountEvenWhenBatchIsTwoHundred() {
         properties.setBatchSize(200);
         properties.setWorkerCount(8);
-        when(tasks.lockClaimable(8)).thenReturn(List.of());
+        when(tasks.lockClaimable(0, 1, 8, 10_000L)).thenReturn(claimSelection());
 
-        assertThat(coordinator.processDue()).isZero();
+        assertThat(coordinator.processDue(0, 1)).isZero();
 
-        verify(tasks).lockClaimable(8);
+        verify(tasks).lockClaimable(0, 1, 8, 10_000L);
     }
 
     @Test
     void consecutiveJobsRefreshBacklogOnlyOnceWithinConfiguredInterval() {
         properties.setBacklogRefreshIntervalMs(10_000L);
-        when(tasks.lockClaimable(1)).thenReturn(List.of());
+        when(tasks.lockClaimable(0, 1, 1, 10_000L)).thenReturn(claimSelection());
 
-        assertThat(coordinator.processDue()).isZero();
-        assertThat(coordinator.processDue()).isZero();
+        assertThat(coordinator.processDue(0, 1)).isZero();
+        assertThat(coordinator.processDue(0, 1)).isZero();
 
-        verify(tasks, times(2)).lockClaimable(1);
+        verify(tasks, times(2)).lockClaimable(0, 1, 1, 10_000L);
         verify(tasks).backlog();
         verify(tasks).missingTaskCount();
         verify(tasks).inconsistentStateCount();
@@ -210,7 +215,7 @@ class TimeoutSubmissionCoordinatorTest {
             eq(1L), anyString(), any(), anyInt(), anyString(), anyString(), any()
         )).thenReturn(1);
 
-        assertThat(coordinator.processDue()).isZero();
+        assertThat(coordinator.processDue(0, 1)).isZero();
 
         verify(finalPayloads, never()).store(anyLong(), anyString(), any());
         verify(tasks).markFailure(
@@ -239,7 +244,7 @@ class TimeoutSubmissionCoordinatorTest {
             eq(1L), anyString(), any(), anyInt(), anyString(), anyString(), any()
         )).thenReturn(1);
 
-        assertThat(coordinator.processDue()).isZero();
+        assertThat(coordinator.processDue(0, 1)).isZero();
 
         verify(tasks).renewLease(eq(1L), eq(token.get()), anyLong());
         verify(finalPayloads, never()).store(anyLong(), anyString(), any());
@@ -263,10 +268,10 @@ class TimeoutSubmissionCoordinatorTest {
             eq(1L), anyString(), any(), anyInt(), anyString(), anyString(), any()
         )).thenReturn(1);
 
-        CompletableFuture<Integer> firstRun = CompletableFuture.supplyAsync(coordinator::processDue);
+        CompletableFuture<Integer> firstRun = CompletableFuture.supplyAsync(() -> coordinator.processDue(0, 1));
         assertThat(workerStarted.await(1, TimeUnit.SECONDS)).isTrue();
 
-        assertThat(coordinator.processDue()).isZero();
+        assertThat(coordinator.processDue(0, 1)).isZero();
         verify(metrics).increment("job_overlap");
 
         releaseWorker.countDown();
@@ -284,12 +289,126 @@ class TimeoutSubmissionCoordinatorTest {
         )).thenReturn(1);
         executor.shutdown();
 
-        assertThat(coordinator.processDue()).isZero();
+        assertThat(coordinator.processDue(0, 1)).isZero();
 
         verify(tasks).markFailure(
             eq(1L), eq(token.get()), any(), anyInt(), anyString(), anyString(), any()
         );
         verify(metrics).increment("worker_rejected");
+    }
+
+    @Test
+    void consecutiveBatchesReuseSameShardParameters() {
+        LocalDateTime now = LocalDateTime.of(2026, 8, 8, 20, 0);
+        LocalDateTime dueAt = now.minusSeconds(1);
+        TaskCandidate candidate = new TaskCandidate(1L, 1L, 2L, 3L, dueAt, "PENDING", 0, null);
+        when(tasks.lockClaimable(1, 3, 1, 10_000L)).thenReturn(claimSelection(candidate), claimSelection());
+        when(tasks.lockSession(1L)).thenReturn(new SessionState(1L, 2L, 3L, "ANSWERING", dueAt));
+        when(tasks.markProcessing(eq(1L), anyString(), eq(30_000L))).thenReturn(1);
+        when(tasks.claimSessionForTimeout(1L)).thenReturn(1);
+        when(snapshots.loadLatestDraft(eq(2L), eq(3L), any())).thenReturn(
+            new SnapshotDraft(Map.of(10L, "A"), 1L, now)
+        );
+        when(finalPayloads.encode(any(Map.class), eq(1L))).thenReturn(
+            new EncodedFinalAnswers(1L, new byte[] {1}, "hash")
+        );
+        when(tasks.lockById(1L)).thenAnswer(invocation -> new TaskRow(
+            1L, 1L, 2L, 3L, null, dueAt, "PROCESSING", "foreign-token",
+            now.plusSeconds(30), 1, null, now
+        ));
+
+        assertThat(coordinator.processDue(1, 3)).isZero();
+
+        verify(tasks, times(2)).lockClaimable(1, 3, 1, 10_000L);
+        verify(tasks, never()).lockClaimable(eq(0), eq(1), anyInt(), anyLong());
+        verify(metrics).increment("stale_claim");
+    }
+
+    @Test
+    void invalidShardParametersFailBeforeDatabaseAccess() {
+        assertThatThrownBy(() -> coordinator.processDue(-1, 2))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> coordinator.processDue(2, 2))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> coordinator.processDue(0, 0))
+            .isInstanceOf(IllegalArgumentException.class);
+
+        verifyNoInteractions(tasks, jdbc);
+    }
+
+    @Test
+    void observerFailureCannotChangeBusinessFailureHandling() {
+        TimeoutSubmissionObservation observer = mock(TimeoutSubmissionObservation.class);
+        doThrow(new IllegalStateException("observer failed")).when(observer).onClaimProcessingStarted(
+            anyLong(), anyLong(), anyInt(), anyString(), anyLong()
+        );
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        when(transactionManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
+        TimeoutSubmissionCoordinator isolated = new TimeoutSubmissionCoordinator(
+            tasks, properties, new TimeoutSubmissionBackoffPolicy(properties), metrics,
+            snapshots, finalPayloads, outbox, projectionService, jdbc,
+            new TransactionTemplate(transactionManager), executor, leaseScheduler, observer
+        );
+        LocalDateTime now = LocalDateTime.of(2026, 8, 8, 20, 0);
+        AtomicReference<String> token = arrangeClaim(now);
+        when(snapshots.loadLatestDraft(eq(2L), eq(3L), any())).thenThrow(
+            new IllegalStateException("business failure")
+        );
+        when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
+            .thenReturn(now);
+        when(tasks.markFailure(
+            eq(1L), anyString(), any(), anyInt(), anyString(), anyString(), any()
+        )).thenReturn(1);
+
+        assertThat(isolated.processDue(0, 1)).isZero();
+
+        verify(tasks).markFailure(
+            eq(1L), eq(token.get()), any(), anyInt(), anyString(), anyString(), any()
+        );
+    }
+
+
+    private static ClaimSelection claimSelection(TaskCandidate... candidates) {
+        int ownPending = 0;
+        int crossPending = 0;
+        int ownRecovered = 0;
+        int crossRecovered = 0;
+        for (TaskCandidate candidate : candidates) {
+            if (candidate.recoveredLease()) {
+                ownRecovered += 1;
+            } else {
+                ownPending += 1;
+            }
+        }
+        return new ClaimSelection(List.of(candidates), ownPending, crossPending, ownRecovered, crossRecovered);
+    }
+
+    @Test
+    void claimMetricsDistinguishOwnAndCrossShardSources() {
+        LocalDateTime now = LocalDateTime.of(2026, 8, 8, 20, 0);
+        LocalDateTime dueAt = now.minusSeconds(1);
+        // 本片 PENDING（id=1, MOD(1,3)=1=shardIndex）
+        TaskCandidate own = new TaskCandidate(1L, 1L, 2L, 3L, dueAt, "PENDING", 0, null);
+        // 跨片 PENDING（id=2, MOD(2,3)=2 != 1）
+        TaskCandidate cross = new TaskCandidate(2L, 2L, 2L, 4L, dueAt, "PENDING", 0, null);
+        // 跨片过期租约（id=5, MOD(5,3)=2 != 1）
+        TaskCandidate crossRecovered = new TaskCandidate(5L, 5L, 2L, 5L, dueAt, "PROCESSING", 1, now.minusSeconds(1));
+        when(tasks.lockClaimable(eq(1), eq(3), anyInt(), eq(10_000L))).thenReturn(
+            new ClaimSelection(List.of(own, cross, crossRecovered), 1, 1, 0, 1),
+            new ClaimSelection(List.of(), 0, 0, 0, 0));
+        when(tasks.lockSession(anyLong())).thenReturn(
+            new SessionState(1L, 2L, 3L, "ANSWERING", dueAt));
+        when(tasks.markProcessing(anyLong(), anyString(), anyLong())).thenReturn(1);
+        when(tasks.claimSessionForTimeout(anyLong())).thenReturn(1);
+        when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
+            .thenReturn(now);
+
+        coordinator.processDue(1, 3);
+
+        verify(metrics).increment("claim_own_pending");
+        verify(metrics).increment("claim_cross_pending");
+        verify(metrics).increment("claim_lease_recovered_cross");
+        verify(metrics, never()).increment("claim_lease_recovered_own");
     }
 
     private AtomicReference<String> arrangeClaim(LocalDateTime now) {
@@ -298,7 +417,7 @@ class TimeoutSubmissionCoordinatorTest {
             1L, 1L, 2L, 3L, dueAt, "PENDING", 0, null
         );
         AtomicReference<String> token = new AtomicReference<>();
-        when(tasks.lockClaimable(1)).thenReturn(List.of(candidate), List.of());
+        when(tasks.lockClaimable(0, 1, 1, 10_000L)).thenReturn(claimSelection(candidate), claimSelection());
         when(tasks.lockSession(1L)).thenReturn(
             new SessionState(1L, 2L, 3L, "ANSWERING", dueAt)
         );

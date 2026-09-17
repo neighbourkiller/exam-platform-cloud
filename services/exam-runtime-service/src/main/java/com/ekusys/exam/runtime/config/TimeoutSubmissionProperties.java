@@ -17,6 +17,7 @@ public class TimeoutSubmissionProperties {
     private double backoffMultiplier = 2.0;
     private long backoffMaxMs = 30_000L;
     private double backoffJitter = 0.2;
+    private long crossShardDelayMs = 10_000L;
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -38,6 +39,8 @@ public class TimeoutSubmissionProperties {
     }
     public int getMaxAttempts() { return maxAttempts; }
     public void setMaxAttempts(int maxAttempts) { this.maxAttempts = maxAttempts; }
+    public long getCrossShardDelayMs() { return crossShardDelayMs; }
+    public void setCrossShardDelayMs(long crossShardDelayMs) { this.crossShardDelayMs = crossShardDelayMs; }
     public long getBackoffInitialMs() { return backoffInitialMs; }
     public void setBackoffInitialMs(long backoffInitialMs) { this.backoffInitialMs = backoffInitialMs; }
     public double getBackoffMultiplier() { return backoffMultiplier; }
@@ -58,6 +61,7 @@ public class TimeoutSubmissionProperties {
     public long safeBacklogRefreshIntervalMs() { return Math.max(1_000L, backlogRefreshIntervalMs); }
     public int safeClaimSize() { return Math.min(safeBatchSize(), safeWorkerCount()); }
     public int safeMaxAttempts() { return Math.max(1, maxAttempts); }
+    public long safeCrossShardDelayMs() { return Math.max(1_000L, crossShardDelayMs); }
     public long safeBackoffInitialMs() { return Math.max(1L, backoffInitialMs); }
     public long safeBackoffMaxMs() { return Math.max(safeBackoffInitialMs(), backoffMaxMs); }
     public double safeBackoffMultiplier() { return Math.max(1.0, backoffMultiplier); }

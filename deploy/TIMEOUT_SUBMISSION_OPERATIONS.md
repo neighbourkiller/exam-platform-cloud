@@ -1,5 +1,28 @@
 # 超时自动交卷 V2 运维说明
 
+## 分片模型：V1、旧任务池 V2 与"分片优先＋跨片恢复" V2（当前版本）
+
+| 模式 | 领取方式 | 说明 |
+|---|---|---|
+| V1（`app.timeout-submission.enabled=false`） | `exam_session` 按 `MOD(id, shardTotal) = shardIndex` 固定分片扫描 | 无任务表与租约，分片参数直接过滤会话。 |
+| 旧任务池 V2（升级前） | `SHARDING_BROADCAST` 唤醒后，所有实例竞争同一任务池 | 分片参数在 Service 层被丢弃；互斥完全依赖行锁、租约令牌和最终化校验。 |
+| 分片优先＋跨片恢复（当前版本） | 四阶段混合领取：①全局恢复过期租约（不取模）→②本片到期 `PENDING`（为跨片预留 `ceil(R/2)`）→③跨片 `PENDING` 补领（`available_at` 已超过 `cross-shard-delay-ms`）→④本片补足（排除已选 ID） | 单实例跳过跨片预留；互斥仍依赖行锁、租约令牌和最终化校验。故障分片的任务无需等待执行器摘除即可由存活实例接管。 |
+
+当前版本的补充语义：
+
+- 参数校验：`shardTotal < 1`、`shardIndex < 0` 或 `shardIndex >= shardTotal` 会在访问数据库前抛出
+  `IllegalArgumentException` 并使该次执行失败，不会静默退化为全表领取；单实例固定使用 `(0, 1)`。
+- 跨片兜底等待：`app.timeout-submission.cross-shard-delay-ms`（环境变量
+  `APP_TIMEOUT_SUBMISSION_CROSS_SHARD_DELAY_MS`，默认 10000，最小 1000）表示其他分片 `PENDING`
+  任务自 `available_at` 起等待多久后允许补领；它不是故障恢复 SLA 保证。
+- 分片只约束领取阶段：已领取任务继续按原租约令牌处理，续租、最终化、失败退避不增加分片条件；
+  扩缩容交叠期间仍以行锁、租约令牌与最终化校验保护写入。
+- 每轮汇总日志包含分片参数、本片/跨片 PENDING 领取量、本片/跨片过期租约恢复量与完成量；
+  指标 `claim_own_pending`、`claim_cross_pending`、`claim_lease_recovered_own`、
+  `claim_lease_recovered_cross` 按成功领取计数。
+- 分片键是任务表 `id`；任务创建逻辑使其与会话 `id` 一致。动态 `MOD` 无法直接利用现有索引定位分片，
+  补领不构成性能提升依据，容量结论仍以容量验收为准。
+
 ## 可靠性边界
 
 XXL-JOB 只负责唤醒 `examTimeoutSubmitJob`。Runtime 使用 MySQL
@@ -54,6 +77,20 @@ docker compose -p exam-platform-cloud -f docker-compose.yml --env-file .env.micr
 
 `deploy/mysql/init/02-configure-xxl-job.sh` 只会影响新 MySQL 数据卷；已有环境必须在
 XXL-JOB 控制台修改 CRON，禁止通过删除数据卷重新初始化。
+
+### 严格分片补丁的发布步骤
+
+本次将 V2 领取 SQL 收紧为严格分片，无 Schema 变更。发布窗口内按以下顺序执行：
+
+1. 在 XXL-JOB 控制台暂停 `examTimeoutSubmitJob`，等待所有在途执行退出；通过 Runtime 日志
+   确认没有仍在运行的超时交卷工作线程（可观察 `exam.timeout.submission.worker.active` 归零）。
+2. 统一升级全部 Runtime 实例到包含严格分片领取的版本；禁止新旧领取语义长期混跑。
+3. 在 XXL-JOB 执行器注册列表中确认全部实例已重新注册，然后恢复 `SHARDING_BROADCAST` 触发。
+4. 联调确认每轮广播覆盖有效执行器及完整分片下标：Runtime 日志中协调器每轮汇总
+   `Timeout submission round finished: shardIndex=..., shardTotal=..., claimed=..., completed=...`
+   的 `shardTotal` 应与执行器注册数一致；故障摘除后的新一轮总数同样必须与注册列表一致。
+5. 保留 `SHARDING_BROADCAST`、`SERIAL_EXECUTION`、`DO_NOTHING` 和现有调度周期，不新增调度器
+   或 Compose 入口。分片补齐不自动开启 V2，也不豁免容量、故障注入和告警验收门槛。
 
 ## 状态检查
 
@@ -153,6 +190,17 @@ Submission=`IN_PROGRESS`，且不存在最终载荷和逻辑 `SubmissionAccepted
 最终载荷或 Outbox 事件。
 
 ## 回滚
+
+### 回滚严格分片补丁
+
+1. 暂停 XXL-JOB，等待在途执行退出、工作线程结束（含续租中的任务完成或租约到期）。
+2. 将全部 Runtime 实例恢复到上一版 V2 任务池领取代码（无分片过滤的 `lockClaimable`），
+   保持原有 V2 配置与 `SHARDING_BROADCAST` 路由不变；任务表、租约令牌和 Outbox 结构无需回退。
+3. 恢复调度前在 XXL-JOB 执行器注册列表确认实例数量，避免半旧拓扑下的分片总数错配。
+4. 不要把关闭 V2 或切换 V1 当作本次分片改动的默认回滚方式；仅在 V2 本身需要回退时才按
+   下述 V2 回滚流程执行。
+
+### 回滚 V2
 
 1. 暂停 XXL-JOB，并将 `app.timeout-submission.enabled=false` 发布到所有实例；使用环境
    变量占位符时，将 `APP_TIMEOUT_SUBMISSION_V2_ENABLED=false` 注入后滚动重启。
