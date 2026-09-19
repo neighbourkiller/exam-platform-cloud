@@ -34,7 +34,7 @@
 > - Searched for `snapshot|Snapshot|lease|Lease|timeout|Timeout|SKIP LOCKED|Caffeine|Cache<|RateLimiter|token bucket|RedisScript|DefaultRedisScript` in `exam-runtime-service`
 > - Searched for `@PreAuthorize|Jwt|refresh token|RefreshToken|SERVICE_CLIENT|service.client|MinIO|XxlJob|@XxlJob` in `services`
 > - Searched for `^#|^##|^###` in `微服务系统组件选型与Java后端面试回答.md`
-> - Read `./documents/微服务系统组件选型与Java后端面试回答.md`
+> - Read `./documents/技术文档/架构与组件选型.md`
 > - Read `./services/exam-runtime-service/AGENTS.md`
 > - Read `~/.codex/memories/MEMORY.md`
 > - Read `./README_zh.md`
@@ -68,7 +68,7 @@
 - 参与 Docker Compose 部署体系建设，编排 MySQL、Redis、RabbitMQ、Nacos、MinIO、XXL-Job及各业务服务，实现配置发布、密钥初始化和演示数据导入。
 - 编写 JUnit、Mockito 和 Testcontainers 测试，覆盖核心业务、消息幂等、并发任务领取及数据库事务边界。
 
-如果简历篇幅有限，建议优先保留“考试运行时、Redis 快照、Outbox/Inbox、鉴权限流、数据库优化、容器化部署”这六类职责，它们比普通 CRUD 更能体现后端能力。以上表述依据当前 [README_zh.md](./README_zh.md:19)、[pom.xml](./pom.xml:18)及服务实现静态核对整理；本次未修改代码，也未运行测试或部署验证。
+如果简历篇幅有限，建议优先保留“考试运行时、Redis 快照、Outbox/Inbox、鉴权限流、数据库优化、容器化部署”这六类职责，它们比普通 CRUD 更能体现后端能力。以上表述依据当前 [README_zh.md](../../../README_zh.md#L19)、[pom.xml](../../../pom.xml#L18)及服务实现静态核对整理；本次未修改代码，也未运行测试或部署验证。
 
 > 面向管理员、教师和学生的前后端分离在线考试平台，覆盖题库管理、智能组卷、考试发布、在线作答、自动交卷、异步阅卷、成绩分析及监考风险研判等完整流程。围绕高并发作答场景，重点解决考试状态流转、断线恢复、超时交卷、异步评分与监考事件追踪等问题。
 >
@@ -168,7 +168,7 @@
 
 以上结论来自当前代码和迁移的静态核对；未将测试环境能力夸大为生产运行成果。
 
-> 针对修改后的简历的项目经历，使用 [$interview-master](./.agents/skills/interview-master-skill-main/SKILL.md) 帮助我准备业务面试问题，目前还没有确定面试哪家公司，但是岗位可以认定为 java后端开发
+> 针对修改后的简历的项目经历，使用 `$interview-master`（历史技能引用，原路径 `./.agents/skills/interview-master-skill-main/SKILL.md` 当前不存在） 帮助我准备业务面试问题，目前还没有确定面试哪家公司，但是岗位可以认定为 java后端开发
 
 <details><summary>2 previous messages</summary>
 
@@ -380,7 +380,7 @@
 >
 > 如果处理实例中途宕机，任务租约到期后可以由其他实例重新领取；短暂异常会按照退避策略重试。相比直接扫描会话表并在一个长事务中完成所有操作，独立任务表可以保存重试次数、下次执行时间、租约和失败原因，缩短锁持有时间，也更方便故障恢复和监控。
 
-相关实现集中在 [TimeoutSubmissionCoordinator.java](./services/exam-runtime-service/src/main/java/com/ekusys/exam/runtime/service/TimeoutSubmissionCoordinator.java:182)、[ExamSnapshotService.java](./services/exam-runtime-service/src/main/java/com/ekusys/exam/runtime/service/ExamSnapshotService.java:74) 和 [OutboxPublisher.java](./platform/exam-outbox-support/src/main/java/com/ekusys/exam/common/outbox/OutboxPublisher.java:45)。
+相关实现集中在 [TimeoutSubmissionCoordinator.java](../../../services/exam-runtime-service/src/main/java/com/ekusys/exam/runtime/service/TimeoutSubmissionCoordinator.java#L182)、[ExamSnapshotService.java](../../../services/exam-runtime-service/src/main/java/com/ekusys/exam/runtime/service/ExamSnapshotService.java#L74) 和 [OutboxPublisher.java](../../../platform/exam-outbox-support/src/main/java/com/ekusys/exam/common/outbox/OutboxPublisher.java#L45)。
 
 ## 高概率追问
 
@@ -857,7 +857,7 @@ A可能已经调用了事务方法，并在事务中锁定、读取任务；只�
 
 > 在当前隔离故障测试中，我们对 500 次提交中断 RabbitMQ，期间产生了 110 次发布失败；RabbitMQ 恢复后，500 条 Outbox 最终全部进入 `PUBLISHED`。不过这是测试环境的故障注入结果，不能直接等同于生产高可用结论。
 
-该数据可在[故障注入报告](./documents/超时交卷V2隔离压测与故障注入报告.md:75)中核对。
+该数据可在[故障注入报告](../../测试与验收/超时交卷V2/报告/2026-09-03-隔离压测与故障注入.md#L75)中核对。
 
 ## 面试官可能继续追问
 
@@ -887,8 +887,8 @@ A可能已经调用了事务方法，并在事务中锁定、读取任务；只�
 > - Read `./.agents/skills/interview-master-skill-main/SKILL.md`
 > - Searched for `47\.021|P99|10,000|10000|连接池|线程池` in `documents`
 > - Searched for `EkuExam Cloud resume|timeout auto|47\.021|Outbox|interview` in `MEMORY.md`
-> - Read `./documents/超时交卷V2隔离压测与故障注入报告.md`
-> - Read `./documents/超时交卷V2隔离压测与故障注入报告.md`
+> - Read `./documents/测试与验收/超时交卷V2/报告/2026-09-03-隔离压测与故障注入.md`
+> - Read `./documents/测试与验收/超时交卷V2/报告/2026-09-03-隔离压测与故障注入.md`
 > - Read `~/.codex/memories/MEMORY.md`
 > - Read `~/.codex/memories/MEMORY.md`
 >
@@ -949,7 +949,7 @@ A可能已经调用了事务方法，并在事务中锁定、读取任务；只�
 - 去掉客户端状态轮询后，后台P99仍为 `31.102s`，说明轮询放大了延迟，但最终化热路径本身也需要优化。
 - 标准基线复测的P99又达到 `53.548s`，说明测试结果存在波动，需要隔离负载机、Runtime和MySQL，并进行多轮复测后才能得出容量结论。
 
-相关证据见[超时交卷V2隔离压测与故障注入报告](./documents/超时交卷V2隔离压测与故障注入报告.md:42)。
+相关证据见[超时交卷V2隔离压测与故障注入报告](../../测试与验收/超时交卷V2/报告/2026-09-03-隔离压测与故障注入.md#L42)。
 
 ## 推荐口述版
 
@@ -980,7 +980,7 @@ A可能已经调用了事务方法，并在事务中锁定、读取任务；只�
 >
 > <details><summary>Ran a command</summary>
 >
-> - Ran `sed -n '1,999p' .agents/skills/interview-master-skill-main/SKILL.md >/dev/null && sed -n '60,68p' documents/超时交卷V2隔离压测与故障注入报告.md && sed -n '96,106p' documents/超时交卷V2隔离压测与故障注入报告.md`
+> - Ran `sed -n '1,999p' .agents/skills/interview-master-skill-main/SKILL.md >/dev/null && sed -n '60,68p' documents/测试与验收/超时交卷V2/报告/2026-09-03-隔离压测与故障注入.md && sed -n '96,106p' documents/测试与验收/超时交卷V2/报告/2026-09-03-隔离压测与故障注入.md`
 >
 > </details>
 </details>
@@ -1166,7 +1166,7 @@ A可能已经调用了事务方法，并在事务中锁定、读取任务；只�
 6. 接受后先将压缩载荷、SHA-256、客户端序号和服务端版本写入MySQL。
 7. MySQL事务成功后，再尽力同步到Redis；Redis失败不会推翻已经持久化的草稿。
 
-对应实现在[SnapshotDraftPayloadService.java](./services/exam-runtime-service/src/main/java/com/ekusys/exam/runtime/service/SnapshotDraftPayloadService.java:37)和[ExamSnapshotService.java](./services/exam-runtime-service/src/main/java/com/ekusys/exam/runtime/service/ExamSnapshotService.java:55)。
+对应实现在[SnapshotDraftPayloadService.java](../../../services/exam-runtime-service/src/main/java/com/ekusys/exam/runtime/service/SnapshotDraftPayloadService.java#L37)和[ExamSnapshotService.java](../../../services/exam-runtime-service/src/main/java/com/ekusys/exam/runtime/service/ExamSnapshotService.java#L55)。
 
 最终交卷时，当前V2流程会优先按`submissionId`读取MySQL中的持久草稿，解压并验证SHA-256。只有持久草稿不存在时，才进入旧数据兼容路径，比较旧版MySQL草稿和Redis快照。
 

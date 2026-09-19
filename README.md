@@ -97,6 +97,26 @@ docker compose -p exam-platform-cloud -f docker-compose.yml \
 ```
 
 The example wrapper `bash deploy/docker-deploy-example.sh` only invokes this Compose file.
+On Windows with PowerShell 7, invoke the same Linux deployment entry point through WSL:
+
+```powershell
+pwsh -File .\deploy\docker-deploy-wsl.ps1
+```
+
+To use a non-default WSL distribution, pass its registered name, for example:
+
+```powershell
+pwsh -File .\deploy\docker-deploy-wsl.ps1 -Distribution Ubuntu
+```
+
+The selected WSL distribution must provide `docker compose` and access to a Docker Engine.
+The PowerShell wrapper only converts the project path and calls the Linux example script; it
+does not maintain a second Compose deployment command.
+
+An explicitly authorized experimental WSLC fallback is documented under
+[`deploy/wslc/`](deploy/wslc/README.md). It invokes `wslc.exe` directly, does not replace the
+official Compose entry point, and uses data volumes that are entirely separate from Docker.
+
 The multi-stage Docker build packages the Maven services, while Compose-managed one-shot
 services generate JWT keys, publish Nacos configuration, and load demo data.
 The example wrapper deploys four Runtime instances and one instance of every other gateway

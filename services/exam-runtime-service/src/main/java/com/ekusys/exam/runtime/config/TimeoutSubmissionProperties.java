@@ -12,6 +12,11 @@ public class TimeoutSubmissionProperties {
     private long taskTimeoutMs = 20_000L;
     private long leaseRenewIntervalMs = 10_000L;
     private long backlogRefreshIntervalMs = 10_000L;
+    private boolean reconcileEnabled = true;
+    private long reconcileIntervalMs = 30_000L;
+    private int reconcileBatchSize = 100;
+    private long reconcileMaxRunMs = 1_000L;
+    private long finalizationTransactionTimeoutMs = 5_000L;
     private int maxAttempts = 12;
     private long backoffInitialMs = 1_000L;
     private double backoffMultiplier = 2.0;
@@ -37,6 +42,18 @@ public class TimeoutSubmissionProperties {
     public void setBacklogRefreshIntervalMs(long backlogRefreshIntervalMs) {
         this.backlogRefreshIntervalMs = backlogRefreshIntervalMs;
     }
+    public boolean isReconcileEnabled() { return reconcileEnabled; }
+    public void setReconcileEnabled(boolean reconcileEnabled) { this.reconcileEnabled = reconcileEnabled; }
+    public long getReconcileIntervalMs() { return reconcileIntervalMs; }
+    public void setReconcileIntervalMs(long reconcileIntervalMs) { this.reconcileIntervalMs = reconcileIntervalMs; }
+    public int getReconcileBatchSize() { return reconcileBatchSize; }
+    public void setReconcileBatchSize(int reconcileBatchSize) { this.reconcileBatchSize = reconcileBatchSize; }
+    public long getReconcileMaxRunMs() { return reconcileMaxRunMs; }
+    public void setReconcileMaxRunMs(long reconcileMaxRunMs) { this.reconcileMaxRunMs = reconcileMaxRunMs; }
+    public long getFinalizationTransactionTimeoutMs() { return finalizationTransactionTimeoutMs; }
+    public void setFinalizationTransactionTimeoutMs(long finalizationTransactionTimeoutMs) {
+        this.finalizationTransactionTimeoutMs = finalizationTransactionTimeoutMs;
+    }
     public int getMaxAttempts() { return maxAttempts; }
     public void setMaxAttempts(int maxAttempts) { this.maxAttempts = maxAttempts; }
     public long getCrossShardDelayMs() { return crossShardDelayMs; }
@@ -59,6 +76,12 @@ public class TimeoutSubmissionProperties {
         return Math.max(1_000L, Math.min(leaseRenewIntervalMs, safeLeaseMs() / 2L));
     }
     public long safeBacklogRefreshIntervalMs() { return Math.max(1_000L, backlogRefreshIntervalMs); }
+    public long safeReconcileIntervalMs() { return Math.max(1_000L, reconcileIntervalMs); }
+    public int safeReconcileBatchSize() { return Math.min(100, Math.max(1, reconcileBatchSize)); }
+    public long safeReconcileMaxRunMs() { return Math.max(100L, reconcileMaxRunMs); }
+    public int safeFinalizationTransactionTimeoutSeconds() {
+        return (int) Math.max(1L, (Math.max(1_000L, finalizationTransactionTimeoutMs) + 999L) / 1_000L);
+    }
     public int safeClaimSize() { return Math.min(safeBatchSize(), safeWorkerCount()); }
     public int safeMaxAttempts() { return Math.max(1, maxAttempts); }
     public long safeCrossShardDelayMs() { return Math.max(1_000L, crossShardDelayMs); }

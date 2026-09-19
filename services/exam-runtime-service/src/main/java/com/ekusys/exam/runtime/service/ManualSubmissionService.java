@@ -8,6 +8,8 @@ import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.SessionState;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TaskRow;
 import com.ekusys.exam.runtime.service.SubmissionFinalPayloadService.EncodedFinalAnswers;
 import java.util.concurrent.ThreadLocalRandom;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -24,6 +26,25 @@ public class ManualSubmissionService {
     private final SubmissionStatusProjectionService projectionService;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final TransactionTemplate finalizationTransactions;
+
+    @Autowired
+    public ManualSubmissionService(TimeoutTaskRepository tasks,
+                                   SubmissionFinalPayloadService finalPayloads,
+                                   RuntimeOutboxService outbox,
+                                   SubmissionStatusProjectionService projectionService,
+                                   JdbcTemplate jdbc,
+                                   TransactionTemplate transactions,
+                                   @Qualifier("timeoutSubmissionFinalizationTransactionTemplate")
+                                   TransactionTemplate finalizationTransactions) {
+        this.tasks = tasks;
+        this.finalPayloads = finalPayloads;
+        this.outbox = outbox;
+        this.projectionService = projectionService;
+        this.jdbc = jdbc;
+        this.transactions = transactions;
+        this.finalizationTransactions = finalizationTransactions;
+    }
 
     public ManualSubmissionService(TimeoutTaskRepository tasks,
                                    SubmissionFinalPayloadService finalPayloads,
@@ -31,12 +52,7 @@ public class ManualSubmissionService {
                                    SubmissionStatusProjectionService projectionService,
                                    JdbcTemplate jdbc,
                                    TransactionTemplate transactions) {
-        this.tasks = tasks;
-        this.finalPayloads = finalPayloads;
-        this.outbox = outbox;
-        this.projectionService = projectionService;
-        this.jdbc = jdbc;
-        this.transactions = transactions;
+        this(tasks, finalPayloads, outbox, projectionService, jdbc, transactions, transactions);
     }
 
     public ManualSubmissionResult submit(Long sessionId, Long examId, Long studentId,
@@ -46,7 +62,7 @@ public class ManualSubmissionService {
         repairTaskBeforeFinalization(sessionId);
         for (int attempt = 1; attempt <= MAX_LOCK_ATTEMPTS; attempt++) {
             try {
-                ManualSubmissionResult result = transactions.execute(status -> {
+                ManualSubmissionResult result = finalizationTransactions.execute(status -> {
                     TaskRow task = tasks.lockBySession(sessionId);
                     if (task == null) {
                         throw new IllegalStateException("超时交卷任务不存在");
@@ -105,6 +121,11 @@ public class ManualSubmissionService {
         if (!"ANSWERING".equals(session.status())) {
             throw new BusinessException("考试会话已结束");
         }
+        // Task 和 Session 均已锁定后重新读取数据库时间，避免锁等待跨过截止仍按旧时间交卷。
+        java.time.LocalDateTime now = dbNow();
+        if (session.deadline() == null || !session.deadline().isAfter(now)) {
+            return new ManualSubmissionResult("SUBMITTING", false);
+        }
         if (tasks.claimManualSession(session.id(), request.getClientId(), request.getLeaseToken()) != 1) {
             SessionState latest = tasks.lockSession(session.id());
             if (latest != null && !"ANSWERING".equals(latest.status())) {
@@ -117,7 +138,7 @@ public class ManualSubmissionService {
                 throw new IllegalStateException("超时交卷任务加速失败");
             }
             if (latest != null && latest.deadline() != null
-                && !latest.deadline().isAfter(dbNow())) {
+                && !latest.deadline().isAfter(now)) {
                 return new ManualSubmissionResult("SUBMITTING", false);
             }
             throw new BusinessException(

@@ -46,4 +46,16 @@ class TimeoutSubmissionPropertiesTest {
         assertThat(properties.safeTaskTimeoutMs()).isEqualTo(1_999L);
         assertThat(properties.safeLeaseRenewIntervalMs()).isEqualTo(1_000L);
     }
+
+    @Test
+    void reconciliationIsBoundedAndUsesFiveSecondFinalizationTimeoutByDefault() {
+        TimeoutSubmissionProperties properties = new TimeoutSubmissionProperties();
+
+        properties.setReconcileBatchSize(500);
+        properties.setReconcileMaxRunMs(0L);
+
+        assertThat(properties.safeReconcileBatchSize()).isEqualTo(100);
+        assertThat(properties.safeReconcileMaxRunMs()).isEqualTo(100L);
+        assertThat(properties.safeFinalizationTransactionTimeoutSeconds()).isEqualTo(5);
+    }
 }

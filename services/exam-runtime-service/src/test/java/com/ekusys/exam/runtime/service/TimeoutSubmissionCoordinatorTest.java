@@ -173,8 +173,7 @@ class TimeoutSubmissionCoordinatorTest {
 
         verify(tasks, times(2)).lockClaimable(0, 1, 1, 10_000L);
         verify(tasks).backlog();
-        verify(tasks).missingTaskCount();
-        verify(tasks).inconsistentStateCount();
+        verify(tasks).findReconcileCandidates(0, 1, 0L, 100);
     }
 
     @Test

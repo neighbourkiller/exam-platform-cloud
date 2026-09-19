@@ -110,6 +110,26 @@ docker compose \
 bash deploy/docker-deploy-example.sh
 ```
 
+在 Windows PowerShell 7 中，可通过 WSL 包装脚本调用同一个 Linux 部署入口：
+
+```powershell
+pwsh -File .\deploy\docker-deploy-wsl.ps1
+```
+
+需要指定非默认 WSL 发行版时，可传入其注册名称：
+
+```powershell
+pwsh -File .\deploy\docker-deploy-wsl.ps1 -Distribution Ubuntu
+```
+
+运行前需确保目标 WSL 发行版中可以执行 `docker compose`，并且能够连接 Docker
+Engine。Windows 包装脚本只负责转换项目路径并调用 Linux 示例脚本，不维护第二套
+Compose 部署命令。
+
+另有经明确授权的实验性 WSLC 备用编排，放在
+[`deploy/wslc/`](deploy/wslc/README.md)。它直接使用 `wslc.exe`，不替代正式 Compose
+入口，并且使用与 Docker 完全独立的数据卷。
+
 该示例脚本固定部署 4 个 Runtime 实例，网关和其他业务模块各部署 1 个容器实例，
 并将全部模块与中间件接入名为 `exam-cloud` 的 Docker 网络。直接执行 Compose 命令时，
 Runtime 实例数仍可通过 `APP_RUNTIME_REPLICAS` 调整。

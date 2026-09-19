@@ -36,12 +36,30 @@ public class SnapshotDraftPayloadService {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * 将答案规范化、压缩并计算摘要。该方法不访问数据库，调用方可以在事务外执行，
+     * 使锁内事务只承担验收和持久化。
+     */
+    public PreparedDraft prepare(List<AnswerPayload> answers) {
+        EncodedDraft encoded = encode(answers);
+        return new PreparedDraft(encoded.answers(), encoded.payload(), encoded.sha256());
+    }
+
     @Transactional
     public Acceptance accept(Long sessionId, Long examId, Long studentId, SnapshotRequest request) {
+        return accept(sessionId, examId, studentId, request, prepare(request.getAnswers()));
+    }
+
+    /**
+     * 只在这里执行数据库验收。此方法由外部服务调用，事务代理不会被同类方法调用绕过。
+     */
+    @Transactional
+    public Acceptance accept(Long sessionId, Long examId, Long studentId,
+                             SnapshotRequest request, PreparedDraft prepared) {
         SessionFence fence = jdbc.query(
             """
                 select s.status,s.deadline_time,s.active_client_id,s.active_client_token,
-                       sub.id submission_id,current_timestamp(3) db_now
+                       sub.id submission_id
                   from exam_session s
                   join submission sub on sub.exam_id=s.exam_id and sub.student_id=s.student_id
                  where s.id=? and s.exam_id=? and s.student_id=?
@@ -52,14 +70,15 @@ public class SnapshotDraftPayloadService {
                 rs.getObject("deadline_time", LocalDateTime.class),
                 rs.getString("active_client_id"),
                 rs.getString("active_client_token"),
-                rs.getLong("submission_id"),
-                rs.getObject("db_now", LocalDateTime.class)
+                rs.getLong("submission_id")
             ),
             sessionId, examId, studentId
         ).stream().findFirst().orElseThrow(() -> new BusinessException("考试会话不存在"));
 
+        // FOR UPDATE 可能在锁等待后才返回，不能使用锁等待前的语句时间判断截止。
+        LocalDateTime dbNow = jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class);
         if (!"ANSWERING".equals(fence.status()) || fence.deadline() == null
-            || !fence.deadline().isAfter(fence.dbNow())) {
+            || dbNow == null || !fence.deadline().isAfter(dbNow)) {
             throw new BusinessException(SESSION_ENDED_CODE, "考试会话已结束");
         }
         if (!request.getClientId().equals(fence.clientId())
@@ -67,8 +86,10 @@ public class SnapshotDraftPayloadService {
             throw new BusinessException(CLIENT_CONFLICT_CODE, "当前设备不再持有考试租约");
         }
 
-        long clientSequence = resolveClientSequence(request, fence.dbNow());
-        EncodedDraft encoded = encode(request.getAnswers());
+        long clientSequence = resolveClientSequence(request, dbNow);
+        EncodedDraft encoded = new EncodedDraft(
+            prepared.answers(), prepared.payload(), prepared.sha256()
+        );
         StoredDraft stored = loadLocked(fence.submissionId());
         if (stored != null) {
             if (clientSequence == stored.clientSequence()) {
@@ -85,12 +106,12 @@ public class SnapshotDraftPayloadService {
                 || request.getBaseServerRevision() != null
                 && request.getBaseServerRevision() != stored.serverRevision()) {
                 return Acceptance.rejected(
-                    stored.serverRevision(), stored.clientSequence(), fence.dbNow(), fence.deadline()
+                    stored.serverRevision(), stored.clientSequence(), dbNow, fence.deadline()
                 );
             }
         } else if (request.getBaseServerRevision() != null
             && request.getBaseServerRevision() != 0L) {
-            return Acceptance.rejected(0L, 0L, fence.dbNow(), fence.deadline());
+            return Acceptance.rejected(0L, 0L, dbNow, fence.deadline());
         }
 
         long nextRevision = stored == null ? 1L : stored.serverRevision() + 1L;
@@ -99,30 +120,26 @@ public class SnapshotDraftPayloadService {
                 insert into submission_draft_payload(
                     submission_id,client_id,client_sequence,server_revision,codec,payload,
                     payload_sha256,accepted_at,created_at,updated_at
-                ) values(?,?,?,?,?,?,?,current_timestamp(3),current_timestamp(3),current_timestamp(3))
+                ) values(?,?,?,?,?,?,?,?,?,?)
                 on duplicate key update client_id=values(client_id),
                     client_sequence=values(client_sequence),server_revision=values(server_revision),
                     codec=values(codec),payload=values(payload),payload_sha256=values(payload_sha256),
-                    accepted_at=values(accepted_at),updated_at=current_timestamp(3)
+                    accepted_at=values(accepted_at),updated_at=values(updated_at)
                 """,
             fence.submissionId(), request.getClientId(), clientSequence, nextRevision, CODEC,
-            encoded.payload(), encoded.sha256()
+            encoded.payload(), encoded.sha256(), dbNow, dbNow, dbNow
         );
         jdbc.update(
-            "update submission set draft_version=greatest(draft_version,?),update_time=current_timestamp(3) where id=?",
-            clientSequence, fence.submissionId()
+            "update submission set draft_version=greatest(draft_version,?),update_time=? where id=?",
+            clientSequence, dbNow, fence.submissionId()
         );
         jdbc.update(
-            "update exam_session set last_snapshot_time=current_timestamp(3),update_time=current_timestamp(3) where id=?",
-            sessionId
-        );
-        LocalDateTime acceptedAt = jdbc.queryForObject(
-            "select accepted_at from submission_draft_payload where submission_id=?",
-            LocalDateTime.class, fence.submissionId()
+            "update exam_session set last_snapshot_time=?,update_time=? where id=?",
+            dbNow, dbNow, sessionId
         );
         return Acceptance.accepted(
-            nextRevision, clientSequence, acceptedAt, fence.deadline(),
-            new SnapshotDraft(encoded.answers(), nextRevision, acceptedAt)
+            nextRevision, clientSequence, dbNow, fence.deadline(),
+            new SnapshotDraft(encoded.answers(), nextRevision, dbNow)
         );
     }
 
@@ -251,7 +268,7 @@ public class SnapshotDraftPayloadService {
     }
 
     private record SessionFence(String status, LocalDateTime deadline, String clientId,
-                                String leaseToken, Long submissionId, LocalDateTime dbNow) {
+                                String leaseToken, Long submissionId) {
     }
 
     private record StoredDraft(String clientId, long clientSequence, long serverRevision,
@@ -260,6 +277,9 @@ public class SnapshotDraftPayloadService {
     }
 
     private record EncodedDraft(Map<Long, String> answers, byte[] payload, String sha256) {
+    }
+
+    public record PreparedDraft(Map<Long, String> answers, byte[] payload, String sha256) {
     }
 
     private record DraftDocument(Map<Long, String> answers) {

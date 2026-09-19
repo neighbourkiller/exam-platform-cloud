@@ -120,11 +120,16 @@ export const loadDraft = async (userId, examId) => {
   if (!result) {
     return null
   }
+  const restoredEditVersion = Number(result.editVersion || 0)
+  const restoredConfirmedEditVersion = Number(result.confirmedEditVersion || 0)
+  const legacyDirty = Boolean(result.dirty) && restoredEditVersion <= restoredConfirmedEditVersion
   return {
     ...result,
     answers: cloneAnswers(result.answers || {}),
     markedQuestionIds: cloneMarkedQuestionIds(result.markedQuestionIds || []),
-    examRuntime: cloneExamRuntime(result.examRuntime || {})
+    examRuntime: cloneExamRuntime(result.examRuntime || {}),
+    editVersion: restoredEditVersion || (legacyDirty ? Math.max(Number(result.clientSequence || result.snapshotVersion || 0), 1) : 0),
+    confirmedEditVersion: restoredConfirmedEditVersion
   }
 }
 
@@ -139,6 +144,8 @@ export const saveDraft = async ({
   snapshotVersion,
   clientSequence,
   serverRevision,
+  editVersion,
+  confirmedEditVersion,
   dirty,
   pendingSubmitIntent,
   examRuntime
@@ -159,6 +166,9 @@ export const saveDraft = async ({
     snapshotVersion: Number.isFinite(Number(snapshotVersion)) ? Number(snapshotVersion) : 0,
     clientSequence: Number.isFinite(Number(clientSequence)) ? Number(clientSequence) : 0,
     serverRevision: Number.isFinite(Number(serverRevision)) ? Number(serverRevision) : 0,
+    editVersion: Number.isFinite(Number(editVersion)) ? Number(editVersion) : 0,
+    confirmedEditVersion: Number.isFinite(Number(confirmedEditVersion))
+      ? Number(confirmedEditVersion) : 0,
     pendingSubmitIntent: pendingSubmitIntent || null,
     dirty: Boolean(dirty)
   }
@@ -181,7 +191,9 @@ export const clearDraft = async (userId, examId) => {
   })
 }
 
-export const enqueueSyncItem = async ({ userId, examId, type, payload, occurredAt, nextAttemptAt }) => {
+export const enqueueSyncItem = async ({
+  userId, examId, type, payload, occurredAt, nextAttemptAt, editVersion
+}) => {
   if (!userId || !examId || !type) {
     return null
   }
@@ -191,6 +203,7 @@ export const enqueueSyncItem = async ({ userId, examId, type, payload, occurredA
     examId: String(examId),
     type,
     payload: payload || {},
+    editVersion: Number.isFinite(Number(editVersion)) ? Number(editVersion) : 0,
     occurredAt: occurredAt || Date.now(),
     attemptCount: 0,
     nextAttemptAt: nextAttemptAt || Date.now(),

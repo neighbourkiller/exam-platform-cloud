@@ -18,6 +18,9 @@ public class TimeoutSubmissionMetrics {
     private final AtomicLong processing = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
     private final AtomicLong oldestOverdueMs = new AtomicLong();
+    private final AtomicLong reconcileLastTriggerEpochMs = new AtomicLong();
+    private final AtomicLong reconcileLastSuccessEpochMs = new AtomicLong();
+    private final AtomicLong reconcileOverdue = new AtomicLong();
 
     public TimeoutSubmissionMetrics(MeterRegistry registry,
                                     @Qualifier("timeoutSubmissionExecutor") ThreadPoolTaskExecutor executor,
@@ -28,6 +31,14 @@ public class TimeoutSubmissionMetrics {
         backlogGauge("FAILED", failed);
         Gauge.builder("exam.timeout.submission.oldest.overdue", oldestOverdueMs, AtomicLong::get)
             .baseUnit("milliseconds")
+            .register(registry);
+        Gauge.builder("exam.timeout.submission.reconcile.last.trigger", reconcileLastTriggerEpochMs, AtomicLong::get)
+            .baseUnit("milliseconds")
+            .register(registry);
+        Gauge.builder("exam.timeout.submission.reconcile.last.success", reconcileLastSuccessEpochMs, AtomicLong::get)
+            .baseUnit("milliseconds")
+            .register(registry);
+        Gauge.builder("exam.timeout.submission.reconcile.overdue", reconcileOverdue, AtomicLong::get)
             .register(registry);
         Gauge.builder("exam.timeout.submission.worker.active", executor, ThreadPoolTaskExecutor::getActiveCount)
             .register(registry);
@@ -63,6 +74,20 @@ public class TimeoutSubmissionMetrics {
             .record(Duration.between(dueAt, completedAt));
     }
 
+    public void recordReconcileTriggered() {
+        reconcileLastTriggerEpochMs.set(System.currentTimeMillis());
+        increment("reconcile_triggered");
+    }
+
+    public void recordReconcileCompleted() {
+        reconcileLastSuccessEpochMs.set(System.currentTimeMillis());
+        increment("reconcile_completed");
+    }
+
+    public void recordReconcileOutcome(String outcome) {
+        increment("reconcile_" + outcome);
+    }
+
     public void updateBacklog(TimeoutSubmissionBacklog backlog) {
         if (backlog == null) {
             return;
@@ -71,6 +96,7 @@ public class TimeoutSubmissionMetrics {
         processing.set(backlog.processing());
         failed.set(backlog.failed());
         oldestOverdueMs.set(backlog.oldestOverdueMs());
+        reconcileOverdue.set(backlog.overdue());
     }
 
     public void recordProjection(String outcome) {

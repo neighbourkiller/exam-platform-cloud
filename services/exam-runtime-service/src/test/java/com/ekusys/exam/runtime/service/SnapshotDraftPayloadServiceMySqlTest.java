@@ -178,8 +178,45 @@ class SnapshotDraftPayloadServiceMySqlTest {
         assertThat(stale.accepted()).isFalse();
         assertThat(stale.serverRevision()).isEqualTo(1L);
         assertThat(jdbc.queryForObject(
+            "select accepted_at from submission_draft_payload where submission_id=30", LocalDateTime.class
+        )).isEqualTo(first.acceptedAt());
+        assertThat(jdbc.queryForObject(
             "select server_revision from submission_draft_payload where submission_id=30", Long.class
         )).isEqualTo(1L);
+    }
+
+    @Test
+    void lockWaitThatCrossesDeadlineIsRejectedAfterSessionLock() throws Exception {
+        LocalDateTime deadline = jdbc.queryForObject(
+            "select timestampadd(second,1,current_timestamp(3))", LocalDateTime.class
+        );
+        jdbc.update("update exam_session set deadline_time=? where id=1", deadline);
+        CountDownLatch sessionLocked = new CountDownLatch(1);
+        CountDownLatch releaseSession = new CountDownLatch(1);
+        CountDownLatch acceptStarted = new CountDownLatch(1);
+
+        CompletableFuture<Void> blocker = CompletableFuture.runAsync(() -> transactions.executeWithoutResult(status -> {
+            jdbc.queryForObject("select id from exam_session where id=1 for update", Long.class);
+            sessionLocked.countDown();
+            await(releaseSession);
+        }));
+        assertThat(sessionLocked.await(3, TimeUnit.SECONDS)).isTrue();
+
+        CompletableFuture<SnapshotDraftPayloadService.Acceptance> blockedAccept =
+            CompletableFuture.supplyAsync(() -> transactions.execute(status -> {
+                acceptStarted.countDown();
+                return drafts.accept(1L, 10L, 20L, request(1L, 0L, "after-lock-wait"));
+            }));
+        assertThat(acceptStarted.await(3, TimeUnit.SECONDS)).isTrue();
+        Thread.sleep(1_500L);
+        releaseSession.countDown();
+        blocker.get(5, TimeUnit.SECONDS);
+
+        assertThatThrownBy(() -> blockedAccept.get(5, TimeUnit.SECONDS))
+            .hasCauseInstanceOf(BusinessException.class);
+        assertThat(jdbc.queryForObject(
+            "select count(*) from submission_draft_payload", Integer.class
+        )).isZero();
     }
 
     @Test

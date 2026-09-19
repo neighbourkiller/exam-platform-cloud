@@ -11,6 +11,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Configuration
 public class TimeoutSubmissionConfiguration {
@@ -25,7 +28,7 @@ public class TimeoutSubmissionConfiguration {
     @Bean
     ApplicationRunner timeoutSubmissionModeReporter(TimeoutSubmissionProperties properties) {
         return arguments -> log.info(
-            "Timeout submission initialized: mode={}, claimStrategy={}, crossShardDelayMs={}, claimSize={}, workerCount={}, leaseMs={}, leaseRenewIntervalMs={}, taskTimeoutMs={}, maxRunMs={}, maxAttempts={}, backlogRefreshIntervalMs={}",
+            "Timeout submission initialized: mode={}, claimStrategy={}, crossShardDelayMs={}, claimSize={}, workerCount={}, leaseMs={}, leaseRenewIntervalMs={}, taskTimeoutMs={}, maxRunMs={}, maxAttempts={}, backlogRefreshIntervalMs={}, reconcileEnabled={}, reconcileIntervalMs={}, reconcileBatchSize={}, reconcileMaxRunMs={}, finalizationTimeoutSeconds={}",
             properties.isEnabled() ? "V2" : "V1",
             properties.isEnabled() ? "shard-first+cross-shard-recovery" : "fixed-shard-scan",
             properties.safeCrossShardDelayMs(),
@@ -36,7 +39,12 @@ public class TimeoutSubmissionConfiguration {
             properties.safeTaskTimeoutMs(),
             properties.safeMaxRunMs(),
             properties.safeMaxAttempts(),
-            properties.safeBacklogRefreshIntervalMs()
+            properties.safeBacklogRefreshIntervalMs(),
+            properties.isReconcileEnabled(),
+            properties.safeReconcileIntervalMs(),
+            properties.safeReconcileBatchSize(),
+            properties.safeReconcileMaxRunMs(),
+            properties.safeFinalizationTransactionTimeoutSeconds()
         );
     }
 
@@ -62,6 +70,18 @@ public class TimeoutSubmissionConfiguration {
         scheduler.setThreadNamePrefix("timeout-submit-lease-");
         scheduler.setWaitForTasksToCompleteOnShutdown(false);
         return scheduler;
+    }
+
+    @Bean
+    @Qualifier("timeoutSubmissionFinalizationTransactionTemplate")
+    TransactionTemplate timeoutSubmissionFinalizationTransactionTemplate(
+        PlatformTransactionManager transactionManager, TimeoutSubmissionProperties properties
+    ) {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        template.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+        template.setTimeout(properties.safeFinalizationTransactionTimeoutSeconds());
+        return template;
     }
 
     @Bean

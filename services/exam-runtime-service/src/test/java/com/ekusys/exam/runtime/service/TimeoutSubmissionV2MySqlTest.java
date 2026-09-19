@@ -562,9 +562,9 @@ class TimeoutSubmissionV2MySqlTest {
     }
 
     @Test
-    void missingTaskReconciliationOnlyReportsAndDoesNotCreateTask() {
+    void missingExpiredTaskIsRepairedByBoundedReconciliation() {
         LocalDateTime deadline = jdbc.queryForObject(
-            "select timestampadd(minute,5,current_timestamp(3))",
+            "select timestampadd(second,-1,current_timestamp(3))",
             LocalDateTime.class
         );
         jdbc.update(
@@ -575,8 +575,47 @@ class TimeoutSubmissionV2MySqlTest {
                 """,
             deadline
         );
+        jdbc.update(
+            """
+                insert into submission(
+                    id,exam_id,student_id,status,timeout_submit,draft_version,create_time,update_time
+                ) values(30,10,20,'IN_PROGRESS',0,0,current_timestamp(3),current_timestamp(3))
+                """
+        );
 
-        assertThat(tasks.missingTaskCount()).isEqualTo(1L);
+        assertThat(tasks.findReconcileCandidates(0, 1, 0L, 100)).hasSize(1);
+        TimeoutSubmissionCoordinator coordinator = buildCoordinator(mock(ExamSnapshotService.class));
+        assertThat(coordinator.processDue(0, 1)).isZero();
+
+        assertThat(jdbc.queryForObject(
+            "select count(*) from submission_timeout_task", Integer.class
+        )).isEqualTo(1);
+        assertThat(jdbc.queryForMap(
+            "select status,submission_id from submission_timeout_task where session_id=1"
+        )).containsEntry("status", "PENDING")
+            .containsEntry("submission_id", 30L);
+    }
+
+    @Test
+    void reconciliationDoesNotCreateTaskWhenFinalPayloadAlreadyExists() {
+        LocalDateTime deadline = jdbc.queryForObject(
+            "select timestampadd(second,-1,current_timestamp(3))",
+            LocalDateTime.class
+        );
+        seedSession(1L, 10L, 20L, 30L, deadline);
+        jdbc.update("delete from submission_timeout_task where id=1");
+        jdbc.update(
+            """
+                insert into submission_final_payload(
+                    submission_id,source,snapshot_version,codec,payload,payload_sha256,finalized_at,created_at
+                ) values(30,'TIMEOUT',1,'GZIP_JSON_V1',?,?,current_timestamp(3),current_timestamp(3))
+                """,
+            new byte[] {1}, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+
+        assertThat(tasks.findReconcileCandidates(0, 1, 0L, 100)).isEmpty();
+        TimeoutSubmissionCoordinator coordinator = buildCoordinator(mock(ExamSnapshotService.class));
+        assertThat(coordinator.processDue(0, 1)).isZero();
         assertThat(jdbc.queryForObject(
             "select count(*) from submission_timeout_task", Integer.class
         )).isZero();

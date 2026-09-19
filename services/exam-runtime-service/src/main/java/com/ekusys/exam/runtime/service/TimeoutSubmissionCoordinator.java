@@ -19,12 +19,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -53,12 +53,19 @@ public class TimeoutSubmissionCoordinator {
     private final SubmissionStatusProjectionService projectionService;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final TransactionTemplate finalizationTransactions;
+    private final TransactionTemplate reconcileTransactions;
     private final TransactionTemplate claimTransactions;
     private final ThreadPoolTaskExecutor executor;
     private final ThreadPoolTaskScheduler leaseScheduler;
     private final TimeoutSubmissionObservation observation;
     private final AtomicBoolean jobRunning = new AtomicBoolean();
+    private final AtomicInteger inFlight = new AtomicInteger();
     private volatile long lastBacklogRefreshNanos = Long.MIN_VALUE;
+    private volatile long lastReconcileNanos = Long.MIN_VALUE;
+    private volatile long reconcileCursor;
+    private volatile int reconcileShardIndex = -1;
+    private volatile int reconcileShardTotal = -1;
 
     @Autowired
     public TimeoutSubmissionCoordinator(
@@ -72,6 +79,8 @@ public class TimeoutSubmissionCoordinator {
         SubmissionStatusProjectionService projectionService,
         JdbcTemplate jdbc,
         TransactionTemplate transactions,
+        @Qualifier("timeoutSubmissionFinalizationTransactionTemplate")
+        TransactionTemplate finalizationTransactions,
         @Qualifier("timeoutSubmissionExecutor") ThreadPoolTaskExecutor executor,
         @Qualifier("timeoutSubmissionLeaseScheduler") ThreadPoolTaskScheduler leaseScheduler,
         TimeoutSubmissionObservation observation
@@ -86,6 +95,15 @@ public class TimeoutSubmissionCoordinator {
         this.projectionService = projectionService;
         this.jdbc = jdbc;
         this.transactions = transactions;
+        this.finalizationTransactions = finalizationTransactions;
+        this.reconcileTransactions = new TransactionTemplate(
+            Objects.requireNonNull(
+                transactions.getTransactionManager(),
+                "Timeout submission reconciliation transaction manager is required"
+            )
+        );
+        this.reconcileTransactions.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        this.reconcileTransactions.setTimeout(properties.safeFinalizationTransactionTimeoutSeconds());
         this.claimTransactions = new TransactionTemplate(
             Objects.requireNonNull(
                 transactions.getTransactionManager(),
@@ -113,8 +131,29 @@ public class TimeoutSubmissionCoordinator {
         @Qualifier("timeoutSubmissionLeaseScheduler") ThreadPoolTaskScheduler leaseScheduler
     ) {
         this(tasks, properties, backoff, metrics, snapshots, finalPayloads, outbox,
-            projectionService, jdbc, transactions, executor, leaseScheduler,
+            projectionService, jdbc, transactions, transactions, executor, leaseScheduler,
             TimeoutSubmissionObservation.NOOP);
+    }
+
+    /** Compatibility constructor retained for isolated tests and rolling callers. */
+    public TimeoutSubmissionCoordinator(
+        TimeoutTaskRepository tasks,
+        TimeoutSubmissionProperties properties,
+        TimeoutSubmissionBackoffPolicy backoff,
+        TimeoutSubmissionMetrics metrics,
+        ExamSnapshotService snapshots,
+        SubmissionFinalPayloadService finalPayloads,
+        RuntimeOutboxService outbox,
+        SubmissionStatusProjectionService projectionService,
+        JdbcTemplate jdbc,
+        TransactionTemplate transactions,
+        @Qualifier("timeoutSubmissionExecutor") ThreadPoolTaskExecutor executor,
+        @Qualifier("timeoutSubmissionLeaseScheduler") ThreadPoolTaskScheduler leaseScheduler,
+        TimeoutSubmissionObservation observation
+    ) {
+        this(tasks, properties, backoff, metrics, snapshots, finalPayloads, outbox,
+            projectionService, jdbc, transactions, transactions, executor, leaseScheduler,
+            observation);
     }
 
     public int processDue(int shardIndex, int shardTotal) {
@@ -138,42 +177,86 @@ public class TimeoutSubmissionCoordinator {
         AtomicInteger crossPending = new AtomicInteger();
         AtomicInteger ownLeaseRecovered = new AtomicInteger();
         AtomicInteger crossLeaseRecovered = new AtomicInteger();
+        BlockingQueue<TaskExecution> completions = new LinkedBlockingQueue<>();
+        List<TaskExecution> active = new ArrayList<>();
 
         while (System.nanoTime() < deadlineNanos) {
-            List<TimeoutTaskClaim> claims = claimBatch(shardIndex, shardTotal,
-                ownPending, crossPending, ownLeaseRecovered, crossLeaseRecovered);
-            if (claims.isEmpty()) {
-                break;
+            TaskExecution done;
+            while ((done = completions.poll()) != null) {
+                active.remove(done);
             }
-            claimed.addAndGet(claims.size());
-            List<Future<?>> futures = new ArrayList<>(claims.size());
-            try {
-                for (TimeoutTaskClaim claim : claims) {
-                    futures.add(executor.submit(() -> {
-                        if (process(claim)) {
-                            completed.incrementAndGet();
+            int capacity = properties.safeWorkerCount() - inFlight.get();
+            if (capacity > 0) {
+                int claimLimit = Math.min(properties.safeClaimSize(), capacity);
+                List<TimeoutTaskClaim> claims = claimBatch(
+                    shardIndex, shardTotal, claimLimit,
+                    ownPending, crossPending, ownLeaseRecovered, crossLeaseRecovered
+                );
+                if (!claims.isEmpty()) {
+                    claimed.addAndGet(claims.size());
+                    boolean rejected = false;
+                    for (int index = 0; index < claims.size(); index += 1) {
+                        TimeoutTaskClaim claim = claims.get(index);
+                        TaskExecution execution = new TaskExecution(claim, completions, completed);
+                        inFlight.incrementAndGet();
+                        try {
+                            execution.register(executor.submit(execution::run));
+                            active.add(execution);
+                        } catch (RejectedExecutionException exception) {
+                            execution.reject();
+                            metrics.increment("worker_rejected");
+                            log.warn("Timeout submission worker rejected a claimed task", exception);
+                            handleFailure(claim, exception);
+                            active.forEach(other -> cancelAndFail(
+                                other, new IllegalStateException("超时交卷工作线程被拒绝", exception)
+                            ));
+                            active.clear();
+                            for (int remaining = index + 1; remaining < claims.size(); remaining += 1) {
+                                handleFailure(
+                                    claims.get(remaining),
+                                    new IllegalStateException("超时交卷工作线程被拒绝", exception)
+                                );
+                            }
+                            rejected = true;
+                            break;
                         }
-                    }));
+                    }
+                    if (rejected) {
+                        break;
+                    }
+                    continue;
                 }
-            } catch (RejectedExecutionException exception) {
-                retryOutstandingClaims(claims, futures, exception);
-                metrics.increment("worker_rejected");
-                log.warn("Timeout submission worker rejected a claimed task", exception);
+            }
+
+            if (active.isEmpty()) {
                 break;
             }
             long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0) {
-                retryOutstandingClaims(
-                    claims, futures, new IllegalStateException("超时交卷批次超过任务总预算")
-                );
+                cancelOutstanding(active, new IllegalStateException("超时交卷批次超过任务总预算"));
                 metrics.increment("job_budget_exhausted");
                 break;
             }
-            if (!awaitBatch(claims, futures, remainingNanos)) {
+            TaskExecution finished;
+            try {
+                finished = completions.poll(remainingNanos, TimeUnit.NANOSECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                cancelOutstanding(active, exception);
                 break;
             }
+            if (finished == null) {
+                metrics.increment("job_budget_exhausted");
+                cancelOutstanding(active, new IllegalStateException("超时交卷批次超过任务总预算"));
+                break;
+            }
+            active.remove(finished);
+        }
+        if (!active.isEmpty()) {
+            cancelOutstanding(active, new IllegalStateException("超时交卷任务未在当前执行窗口完成"));
         }
         refreshBacklogIfDue();
+        reconcileIfDue(shardIndex, shardTotal, deadlineNanos);
         log.info("Timeout submission round finished: shardIndex={}, shardTotal={}, claimed={}, completed={}, "
                 + "ownPending={}, crossPending={}, ownLeaseRecovered={}, crossLeaseRecovered={}",
             shardIndex, shardTotal, claimed.get(), completed.get(),
@@ -226,12 +309,15 @@ public class TimeoutSubmissionCoordinator {
         return result == null ? "SUBMITTING" : result;
     }
 
-    private List<TimeoutTaskClaim> claimBatch(int shardIndex, int shardTotal,
+    private List<TimeoutTaskClaim> claimBatch(int shardIndex, int shardTotal, int claimLimit,
                                               AtomicInteger ownPending, AtomicInteger crossPending,
                                               AtomicInteger ownLeaseRecovered, AtomicInteger crossLeaseRecovered) {
         List<TimeoutTaskClaim> result = claimTransactions.execute(status -> {
             TimeoutTaskRepository.ClaimSelection selection = tasks.lockClaimable(
-                shardIndex, shardTotal, properties.safeClaimSize(), properties.safeCrossShardDelayMs());
+                shardIndex, shardTotal, claimLimit, properties.safeCrossShardDelayMs());
+            if (selection == null) {
+                return List.of();
+            }
             List<TaskCandidate> candidates = selection.candidates();
             List<TimeoutTaskClaim> claims = new ArrayList<>(candidates.size());
             for (TaskCandidate candidate : candidates) {
@@ -331,12 +417,23 @@ public class TimeoutSubmissionCoordinator {
             metrics.recordStage("draft_load", Duration.ofNanos(System.nanoTime() - sDraft));
             requireWithinTaskBudget(claim, taskDeadline, leaseLost);
             long sTx = System.nanoTime();
-            Boolean completed = transactions.execute(status -> finalizeClaim(claim, encoded));
+            Boolean completed = finalizationTransactions.execute(status -> finalizeClaim(claim, encoded));
             metrics.recordStage("transaction_total", Duration.ofNanos(System.nanoTime() - sTx));
             if (!Boolean.TRUE.equals(completed)) {
                 metrics.increment("stale_claim");
                 metrics.recordFinalization(Duration.ofNanos(System.nanoTime() - started), "stale");
                 return false;
+            }
+            try {
+                TimeoutTaskRepository.CompletionTimes completion = tasks.completionTimes(claim.taskId());
+                if (completion != null) {
+                    metrics.recordCompletionLatency(completion.dueAt(), completion.completedAt());
+                }
+            } catch (RuntimeException metricsException) {
+                // 提交已经完成，完成延迟查询失败不能把成功结果重新标记为失败。
+                metrics.increment("metrics_unavailable");
+                log.warn("Timeout submission completion latency unavailable after commit: taskId={}",
+                    claim.taskId(), metricsException);
             }
             observe(() -> observation.onFinalizationCommitted(
                 claim.examId(), claim.taskId(), claim.attempt(), claim.claimToken(),
@@ -400,61 +497,31 @@ public class TimeoutSubmissionCoordinator {
         }
     }
 
-    private boolean awaitBatch(List<TimeoutTaskClaim> claims,
-                               List<Future<?>> futures,
-                               long remainingNanos) {
-        try {
-            long deadlineNanos = System.nanoTime() + remainingNanos;
-            for (int index = 0; index < futures.size(); index += 1) {
-                Future<?> future = futures.get(index);
-                long waitNanos = deadlineNanos - System.nanoTime();
-                if (waitNanos <= 0) {
-                    throw new TimeoutException("超时交卷批次超过任务总预算");
-                }
-                try {
-                    future.get(waitNanos, TimeUnit.NANOSECONDS);
-                } catch (ExecutionException exception) {
-                    metrics.increment("worker_failed");
-                    log.warn("Timeout submission batch worker failed: taskId={}",
-                        claims.get(index).taskId(), exception.getCause());
-                }
-            }
-            return true;
-        } catch (TimeoutException exception) {
-            metrics.increment("job_budget_exhausted");
-            retryOutstandingClaims(claims, futures, exception);
-            return false;
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            retryOutstandingClaims(claims, futures, exception);
-            return false;
-        }
+    private void cancelOutstanding(List<TaskExecution> executions, Exception exception) {
+        List<TaskExecution> copy = List.copyOf(executions);
+        copy.forEach(execution -> cancelAndFail(execution, exception));
     }
 
-    private void retryOutstandingClaims(List<TimeoutTaskClaim> claims,
-                                         List<Future<?>> futures,
-                                         Exception exception) {
-        List<TimeoutTaskClaim> outstanding = new ArrayList<>();
-        for (int index = 0; index < claims.size(); index += 1) {
-            if (index >= futures.size() || !futures.get(index).isDone()) {
-                outstanding.add(claims.get(index));
-            }
-        }
-        outstanding.forEach(TimeoutTaskClaim::cancelExecution);
-        futures.forEach(future -> future.cancel(true));
-        RuntimeException failure = exception instanceof RuntimeException runtimeException
-            ? runtimeException
-            : new IllegalStateException("超时交卷任务未能在当前执行窗口内启动或完成", exception);
-        outstanding.forEach(claim -> handleFailure(claim, failure));
+    private void cancelAndFail(TaskExecution execution, Exception exception) {
+        execution.cancelExecution();
+        handleFailure(
+            execution.claim(),
+            exception instanceof RuntimeException runtimeException
+                ? runtimeException
+                : new IllegalStateException("超时交卷任务未能在当前执行窗口内启动或完成", exception)
+        );
     }
 
     private boolean finalizeClaim(TimeoutTaskClaim claim, EncodedFinalAnswers encoded) {
         long sTaskLock = System.nanoTime();
         TaskRow task = tasks.lockById(claim.taskId());
         metrics.recordStage("task_lock", Duration.ofNanos(System.nanoTime() - sTaskLock));
-        LocalDateTime now = task != null && task.dbNow() != null ? task.dbNow() : dbNow();
-        if (claim.cancellationRequested() || task == null || !task.ownedBy(claim.claimToken())
-            || task.leaseUntil() == null || !task.leaseUntil().isAfter(now)) {
+        if (claim.cancellationRequested() || task == null || !task.ownedBy(claim.claimToken())) {
+            return false;
+        }
+        // 过期任务可以在锁 Session 前快速放弃；这里只允许提前拒绝，不允许据此接受写入。
+        if (task.dbNow() != null && task.leaseUntil() != null
+            && !task.leaseUntil().isAfter(task.dbNow())) {
             return false;
         }
         long sSessionLock = System.nanoTime();
@@ -466,14 +533,26 @@ public class TimeoutSubmissionCoordinator {
         if (!claim.examId().equals(session.examId()) || !claim.studentId().equals(session.studentId())) {
             throw new IllegalStateException("考试会话与超时任务不匹配");
         }
+        // Task 和 Session 均已锁定后重新读取数据库时间，避免锁等待跨过截止或租约期限。
+        LocalDateTime now = dbNow();
+        if (claim.cancellationRequested()
+            || task.leaseUntil() == null || !task.leaseUntil().isAfter(now)) {
+            return false;
+        }
         if ("SUBMITTED".equals(session.status())) {
             if (tasks.markDone(claim.taskId(), claim.claimToken()) != 1) {
                 throw new IllegalStateException("已提交任务完成标记失败");
             }
             return true;
         }
+        if (task.dueAt() == null || task.dueAt().isAfter(now)) {
+            return false;
+        }
         if (!"AUTO_SUBMITTING".equals(session.status())) {
             throw new IllegalStateException("超时交卷会话状态已变化: " + session.status());
+        }
+        if (session.deadline() == null || session.deadline().isAfter(now)) {
+            return false;
         }
 
         Long submissionId = task.submissionId();
@@ -587,16 +666,6 @@ public class TimeoutSubmissionCoordinator {
         }
         try {
             metrics.updateBacklog(tasks.backlog());
-            long missing = tasks.missingTaskCount();
-            long inconsistent = tasks.inconsistentStateCount();
-            long issues = missing + inconsistent;
-            if (issues > 0) {
-                metrics.increment("inconsistent_state", (int) Math.min(Integer.MAX_VALUE, issues));
-                log.error(
-                    "Timeout submission reconciliation found issues: missingTasks={}, inconsistentStates={}",
-                    missing, inconsistent
-                );
-            }
             lastBacklogRefreshNanos = nowNanos;
         } catch (RuntimeException exception) {
             metrics.increment("metrics_unavailable");
@@ -627,6 +696,201 @@ public class TimeoutSubmissionCoordinator {
 
     private LocalDateTime dbNow() {
         return jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class);
+    }
+
+    private final class TaskExecution {
+        private final TimeoutTaskClaim claim;
+        private final BlockingQueue<TaskExecution> completions;
+        private final AtomicInteger completed;
+        private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicBoolean slotReleased = new AtomicBoolean();
+        private final AtomicReference<Future<?>> future = new AtomicReference<>();
+
+        private TaskExecution(TimeoutTaskClaim claim, BlockingQueue<TaskExecution> completions,
+                              AtomicInteger completed) {
+            this.claim = claim;
+            this.completions = completions;
+            this.completed = completed;
+        }
+
+        private TimeoutTaskClaim claim() {
+            return claim;
+        }
+
+        private void register(Future<?> submitted) {
+            future.set(submitted);
+            if (claim.cancellationRequested()) {
+                cancelExecution();
+            }
+        }
+
+        private void run() {
+            if (!started.compareAndSet(false, true)) {
+                finish();
+                return;
+            }
+            try {
+                boolean succeeded = process(claim);
+                if (succeeded) {
+                    completed.incrementAndGet();
+                }
+            } catch (RuntimeException exception) {
+                metrics.increment("worker_failed");
+                log.warn("Timeout submission worker failed: taskId={}", claim.taskId(), exception);
+                handleFailure(claim, exception);
+            } finally {
+                finish();
+            }
+        }
+
+        private void reject() {
+            claim.cancelExecution();
+            if (started.compareAndSet(false, true)) {
+                finish();
+            }
+        }
+
+        private void cancelExecution() {
+            claim.cancelExecution();
+            Future<?> submitted = future.get();
+            if (submitted == null) {
+                if (started.compareAndSet(false, true)) {
+                    finish();
+                }
+                return;
+            }
+            if (!started.get()) {
+                if (submitted.cancel(false) && started.compareAndSet(false, true)) {
+                    finish();
+                }
+            } else {
+                submitted.cancel(true);
+            }
+        }
+
+        private void finish() {
+            if (slotReleased.compareAndSet(false, true)) {
+                inFlight.decrementAndGet();
+                completions.offer(this);
+            }
+        }
+    }
+
+    private void reconcileIfDue(int shardIndex, int shardTotal, long outerDeadlineNanos) {
+        if (!properties.isReconcileEnabled()) {
+            return;
+        }
+        long nowNanos = System.nanoTime();
+        long intervalNanos = TimeUnit.MILLISECONDS.toNanos(properties.safeReconcileIntervalMs());
+        if (lastReconcileNanos != Long.MIN_VALUE
+            && nowNanos - lastReconcileNanos < intervalNanos) {
+            return;
+        }
+        lastReconcileNanos = nowNanos;
+        metrics.recordReconcileTriggered();
+        if (reconcileShardIndex != shardIndex || reconcileShardTotal != shardTotal) {
+            reconcileCursor = 0L;
+            reconcileShardIndex = shardIndex;
+            reconcileShardTotal = shardTotal;
+        }
+        long reconcileDeadline = Math.min(
+            outerDeadlineNanos,
+            nowNanos + TimeUnit.MILLISECONDS.toNanos(properties.safeReconcileMaxRunMs())
+        );
+        if (System.nanoTime() >= reconcileDeadline) {
+            metrics.recordReconcileOutcome("budget_exhausted");
+            return;
+        }
+
+        List<TimeoutTaskRepository.ReconcileCandidate> candidates;
+        try {
+            candidates = tasks.findReconcileCandidates(
+                shardIndex, shardTotal, reconcileCursor, properties.safeReconcileBatchSize()
+            );
+        } catch (RuntimeException exception) {
+            metrics.recordReconcileOutcome("failed");
+            log.warn("Timeout submission reconciliation candidate scan failed: shard={}/{}",
+                shardIndex, shardTotal, exception);
+            return;
+        }
+        if (candidates == null) {
+            candidates = List.of();
+        }
+        boolean pageFinished = candidates.size() < properties.safeReconcileBatchSize();
+        int processed = 0;
+        boolean budgetExhausted = false;
+        for (TimeoutTaskRepository.ReconcileCandidate candidate : candidates) {
+            if (System.nanoTime() >= reconcileDeadline) {
+                metrics.recordReconcileOutcome("budget_exhausted");
+                budgetExhausted = true;
+                break;
+            }
+            TimeoutTaskRepository.ReconcileOutcome outcome = reconcileOne(candidate);
+            processed += 1;
+            reconcileCursor = candidate.sessionId();
+            metrics.recordReconcileOutcome(outcome.name().toLowerCase(java.util.Locale.ROOT));
+            if (outcome == TimeoutTaskRepository.ReconcileOutcome.REPAIRED) {
+                log.info("Timeout submission task repaired: sessionId={}, examId={}, studentId={}",
+                    candidate.sessionId(), candidate.examId(), candidate.studentId());
+            } else if (outcome == TimeoutTaskRepository.ReconcileOutcome.SKIPPED) {
+                if (candidate.taskId() == null) {
+                    log.debug("Timeout submission reconciliation skipped candidate after concurrent state change: "
+                            + "sessionId={}, examId={}, studentId={}",
+                        candidate.sessionId(), candidate.examId(), candidate.studentId());
+                } else {
+                    log.warn("Timeout submission reconciliation found an inconsistent state and left it unchanged: "
+                            + "sessionId={}, taskId={}, taskStatus={}, submissionStatus={}",
+                        candidate.sessionId(), candidate.taskId(), candidate.taskStatus(),
+                        candidate.submissionStatus());
+                }
+            }
+        }
+        if (pageFinished && processed == candidates.size()) {
+            reconcileCursor = 0L;
+        }
+        if (!budgetExhausted) {
+            metrics.recordReconcileCompleted();
+        }
+    }
+
+    private TimeoutTaskRepository.ReconcileOutcome reconcileOne(
+        TimeoutTaskRepository.ReconcileCandidate candidate
+    ) {
+        try {
+            TimeoutTaskRepository.ReconcileOutcome outcome = reconcileTransactions.execute(status -> {
+                int inserted = tasks.insertMissingTask(candidate);
+                TaskRow task = tasks.lockBySession(candidate.sessionId());
+                if (task == null) {
+                    throw new IllegalStateException("对账候选缺少超时任务");
+                }
+                SessionState session = tasks.lockSession(candidate.sessionId());
+                TimeoutTaskRepository.SubmissionFinalState submission =
+                    tasks.lockSubmissionState(candidate.examId(), candidate.studentId());
+                LocalDateTime now = dbNow();
+                boolean eligible = session != null
+                    && session.deadline() != null
+                    && !session.deadline().isAfter(now)
+                    && ("ANSWERING".equals(session.status()) || "AUTO_SUBMITTING".equals(session.status()))
+                    && submission != null
+                    && "IN_PROGRESS".equals(submission.status())
+                    && !submission.hasFinalResult();
+                if (!eligible) {
+                    if (inserted > 0) {
+                        status.setRollbackOnly();
+                    }
+                    return TimeoutTaskRepository.ReconcileOutcome.SKIPPED;
+                }
+                return inserted > 0
+                    ? TimeoutTaskRepository.ReconcileOutcome.REPAIRED
+                    : TimeoutTaskRepository.ReconcileOutcome.SKIPPED;
+            });
+            return outcome == null
+                ? TimeoutTaskRepository.ReconcileOutcome.FAILED : outcome;
+        } catch (RuntimeException exception) {
+            log.warn("Timeout submission reconciliation candidate failed: sessionId={}",
+                candidate.sessionId(), exception);
+            return TimeoutTaskRepository.ReconcileOutcome.FAILED;
+        }
     }
 
     private record TimeoutTaskClaim(Long taskId, Long sessionId, Long examId, Long studentId,

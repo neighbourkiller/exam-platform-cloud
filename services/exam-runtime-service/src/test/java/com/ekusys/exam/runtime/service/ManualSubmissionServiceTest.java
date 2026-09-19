@@ -47,6 +47,8 @@ class ManualSubmissionServiceTest {
             TransactionCallback<?> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         });
+        when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
+            .thenReturn(deadline.minusSeconds(1));
         when(tasks.markDoneLocked(any())).thenReturn(1);
         SubmissionStatusProjectionService projectionService = mock(SubmissionStatusProjectionService.class);
         service = new ManualSubmissionService(tasks, finalPayloads, outbox, projectionService, jdbc, transactions);

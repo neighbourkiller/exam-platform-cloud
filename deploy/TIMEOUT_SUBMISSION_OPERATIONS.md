@@ -35,6 +35,68 @@ Runtime 本地事务中提交；RabbitMQ 之后仍是至少一次投递，消费
 本次 SLA 截止点是 Runtime 本地事务完成，不包含 RabbitMQ Confirm、自动判分或
 Reporting 投影完成。
 
+## 截止语义与答案同步
+
+Runtime 在持有 Session 和 Submission 相关锁后重新读取 MySQL
+`CURRENT_TIMESTAMP(3)`。快照只有在该时间早于截止时间、会话仍为
+`ANSWERING`、客户端租约和版本校验均通过时才会写入；`accepted_at` 记录这次锁内验收时间。
+规范化、压缩和 SHA-256 计算发生在事务外，事务失败不视为已验收。
+
+主动交卷和超时交卷在取得各自锁后也会重新读取数据库时间，并保留 Task 的租约令牌、Session
+状态和最终条件更新作为最后校验。锁等待跨过截止时间时，最终化只能拒绝或交给可恢复状态，不能
+按锁等待前的时间接受写入。
+
+学生端常态每 30 秒执行一次同步兜底；截止前 60 秒内只有答案发生变化时才启用 500 毫秒防抖，
+连续输入最长等待 2 秒。实时同步和离线重放共用一个完整快照发送通道，同一会话最多一个请求在途，
+等待中的内容只保留最新完整快照。重试沿用原序列和原内容；服务端版本冲突后更新版本基线并为当前
+答案生成新序列。ACK 只确认该请求携带的本地编辑版本，发送期间的新编辑仍保持 dirty。
+
+截止判断使用客户端 `serverClock.isExpired()` 的服务端时钟样本。截止后不再发送答案快照；周期刷新
+只会将未确认的最新答案保存为七天本地证据并标记为终态，同时继续查询最终交卷状态。防作弊事件仍
+保持独立队列语义。
+
+## 有界自愈与并发容量
+
+V2 的 `examTimeoutSubmitJob` 每个实例沿用 XXL-JOB 广播调度，并在现有处理轮次末尾执行低频对账：
+默认间隔 30 秒、每页最多 100 个候选、单轮最多 1 秒。游标按当前分片拓扑保存，分片总数或下标变化
+时重置，页结束后回扫。
+
+自动修复只接受同时满足以下条件的候选：会话已截止且状态为 `ANSWERING` 或 `AUTO_SUBMITTING`、
+任务缺失、Submission 为 `IN_PROGRESS`，并且没有最终答案载荷或逻辑
+`SubmissionAccepted` Outbox。每个候选独立短事务，顺序为幂等插入 Task、锁 Task、锁 Session、
+复核 Submission 和数据库时间；复核失败会回滚本次插入。已有 `FAILED` 任务仍使用授权重放接口，
+其他不一致组合只记录告警和对账计数，不自动改写最终状态。
+
+工作池按完成队列补领，空闲槽位完成后才领取下一项；取消 Future 不会提前释放仍在执行的槽位。
+任务拒绝或取消只允许原租约令牌更新失败状态，数据库不可用时停止继续补领，交给租约恢复流程。
+最终化事务使用 `app.timeout-submission.finalization-transaction-timeout-ms`，默认 5000 毫秒。
+本轮不调整 Hikari 连接池。
+
+内部对账配置如下，均位于 `app.timeout-submission`，不新增公开接口或事件字段：
+
+| 配置 | 默认值 | 作用 |
+|---|---:|---|
+| `reconcile-enabled` | `true` | 是否在 V2 处理轮次执行有界对账 |
+| `reconcile-interval-ms` | `30000` | 同一实例两次对账的最小间隔 |
+| `reconcile-batch-size` | `100` | 单页候选上限，运行时强制不超过 100 |
+| `reconcile-max-run-ms` | `1000` | 单次对账预算 |
+| `finalization-transaction-timeout-ms` | `5000` | 最终化事务超时 |
+
+## 新增监控含义
+
+除原有积压和完成延迟外，Runtime 暴露以下指标：
+
+- `exam.timeout.submission.reconcile.last.trigger`：最近一次对账触发时间的 epoch 毫秒；
+- `exam.timeout.submission.reconcile.last.success`：最近一次完整结束的对账时间的 epoch 毫秒；
+- `exam.timeout.submission.reconcile.overdue`：积压查询中已逾期的 PENDING/PROCESSING 数量；
+- `exam.timeout.submission.events{outcome=reconcile_repaired|reconcile_skipped|reconcile_failed}`：
+  对账修复、跳过和失败次数；
+- `exam.timeout.submission.completion.latency`：仅在最终事务提交成功后，从 `due_at` 到
+  `completed_at` 的延迟。
+
+指标不携带学生、任务或考试 ID。候选的会话、任务和状态只写入结构化日志。对账预算耗尽不会更新
+`last.success`，因此可以用该时间戳识别调度停止或持续超时。
+
 ## 上线顺序
 
 1. 备份 `exam_runtime`，先发布包含 `V8__timeout_submission_v2.sql`、
@@ -148,6 +210,19 @@ LIMIT 200;
 [`deploy/load-test/README.md`](load-test/README.md) 依次执行两实例、四实例、10,000 会话同一
 `due_at` 的验收。k6 结果是客户端观察值；最终 SLA 还要按数据库
 `due_at -> completed_at` 复核：
+
+### 本轮实际验证记录
+
+2026-09-19 在 WSL `FedoraLinux-44`（Docker Server 29.7.2、JDK 21）执行 Runtime
+模块及其依赖的 Maven 测试，结果为 170 个测试通过，0 失败、0 错误、0 跳过；其中包含真实
+MySQL/Testcontainers 的锁等待、截止围栏、主动与超时交卷、自愈和最终结果保护场景。
+前端 Vitest 19/19、交卷流程 8/8、入场流程 4/4，生产构建均通过。
+
+`deploy/docker-deploy-example.sh` 的 Compose 配置检查通过，但两次 `up -d --build` 均在拉取
+Docker Hub 的 `curlimages/curl:8.16.0` 或 `alpine:3.22` 时发生 TLS handshake timeout，未进入
+业务镜像构建和运行态验收。因此两实例、四实例、10,000 会话容量、Redis/RabbitMQ/数据库故障注入
+以及告警接收仍未完成验收；保持 `APP_TIMEOUT_SUBMISSION_V2_ENABLED=false`，不得据此宣称已达成
+P99/最大延迟门槛。
 
 ```sql
 SET @exam_id = ?;

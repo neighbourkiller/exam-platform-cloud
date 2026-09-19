@@ -275,7 +275,13 @@ const {
   syncState,
   observeAck: observeSnapshotAck,
   restoreRevision: restoreSnapshotRevision,
-  nextClientSequence
+  nextClientSequence,
+  markEdited: markSnapshotEdited,
+  setSnapshotSender,
+  enqueueSnapshot,
+  replacePendingSnapshot,
+  scheduleSnapshot,
+  dispose: disposeSnapshotSync
 } = useExamSnapshotSync()
 
 const state = reactive({
@@ -352,6 +358,9 @@ const DEFAULT_PROCTORING_POLICY = {
   repeatEventThreshold: 3
 }
 const SNAPSHOT_SYNC_INTERVAL_MS = 30_000
+const SNAPSHOT_LAST_MINUTE_MS = 60_000
+const SNAPSHOT_DEBOUNCE_MS = 500
+const SNAPSHOT_MAX_WAIT_MS = 2_000
 let timer = null
 let snapshotTimer = null
 let inactivityTimer = null
@@ -1145,6 +1154,7 @@ const markNetworkFailure = (error) => {
 }
 
 const stopExamRuntimeTimers = () => {
+  disposeSnapshotSync()
   if (timer) {
     clearInterval(timer)
     timer = null
@@ -1293,6 +1303,8 @@ const persistDraftState = async ({
   snapshotVersion = syncState.snapshotVersion,
   clientSequence = syncState.clientSequence,
   serverRevision = syncState.serverRevision,
+  editVersion = syncState.editVersion,
+  confirmedEditVersion = syncState.confirmedEditVersion,
   dirty = true,
   nextPendingSubmitIntent = pendingSubmitIntent.value,
   answersMap = buildAnswerMapFromState(),
@@ -1316,6 +1328,8 @@ const persistDraftState = async ({
       snapshotVersion,
       clientSequence,
       serverRevision,
+      editVersion,
+      confirmedEditVersion,
       pendingSubmitIntent: nextPendingSubmitIntent,
       examRuntime,
       dirty
@@ -1329,8 +1343,15 @@ const persistDraftState = async ({
       Number(clientSequence || snapshotVersion || 0)
     )
     syncState.serverRevision = Number(serverRevision || 0)
+    syncState.editVersion = Math.max(
+      Number(syncState.editVersion || 0), Number(editVersion || 0)
+    )
+    syncState.confirmedEditVersion = Math.max(
+      Number(syncState.confirmedEditVersion || 0), Number(confirmedEditVersion || 0)
+    )
     pendingSubmitIntent.value = nextPendingSubmitIntent
     syncState.dirty = Boolean(dirty)
+      || Number(syncState.editVersion || 0) > Number(syncState.confirmedEditVersion || 0)
     syncState.localSavedAt = Date.now()
     syncState.localSaveFailed = false
     syncState.lastSyncErrorMessage = ''
@@ -1484,16 +1505,21 @@ const buildSnapshotPayload = () => {
   }
 }
 
-const queueSnapshotSync = async (payload) => {
+const queueSnapshotSync = async (payload, editVersion = syncState.editVersion) => {
   if (!syncState.userId) {
     return
   }
+  const queued = await listSyncItems(syncState.userId, examId)
+  await Promise.all(
+    queued.filter((item) => item.type === 'SNAPSHOT').map((item) => deleteSyncItem(item.id))
+  )
   await enqueueSyncItem({
     userId: syncState.userId,
     examId,
     type: 'SNAPSHOT',
     payload: withoutClientLeasePayload(payload),
-    occurredAt: Date.now()
+    occurredAt: Date.now(),
+    editVersion
   })
   await refreshQueueSize()
 }
@@ -1518,6 +1544,193 @@ const queueAntiCheatSync = async ({ eventType, durationMs, payload, evidenceJson
   await refreshQueueSize()
 }
 
+const snapshotItemEditVersion = (item) => Number(
+  item?.editVersion || syncState.editVersion || 0
+)
+
+const buildLatestSnapshotItem = (baseItem = {}) => ({
+  ...baseItem,
+  type: 'SNAPSHOT',
+  payload: withoutClientLeasePayload(buildSnapshotPayload()),
+  editVersion: syncState.editVersion,
+  occurredAt: Date.now(),
+  nextAttemptAt: Date.now()
+})
+
+const handleSnapshotConflict = async (item, ack) => {
+  syncState.serverRevision = Math.max(
+    Number(syncState.serverRevision || 0), Number(ack?.serverRevision || 0)
+  )
+  const latest = buildLatestSnapshotItem({
+    ...item,
+    lastError: '服务器草稿版本已更新，已按最新答案重新生成同步序列',
+    attemptCount: Number(item?.attemptCount || 0)
+  })
+  latest.payload = {
+    ...latest.payload,
+    baseServerRevision: syncState.serverRevision || undefined
+  }
+  await persistDraftState({
+    serverRevision: syncState.serverRevision,
+    dirty: true
+  })
+  if (item?.id) {
+    await updateSyncItem(latest)
+  } else {
+    replacePendingSnapshot(latest)
+  }
+  return latest
+}
+
+const sendSnapshotItem = async (item) => {
+  const payload = item?.payload || {}
+  syncState.syncing = true
+  try {
+    if (isExamExpiredLocally()) {
+      await preserveExpiredSnapshotItem(item)
+      return { accepted: false, terminal: true, expired: true }
+    }
+    const validationError = answerPayloadValidationError(payload)
+    if (validationError) {
+      const error = new Error(validationError)
+      error.isBusinessError = true
+      throw error
+    }
+    const startedAt = Date.now()
+    const ack = await runLeaseRequest(() => snapshotApi(
+      examId,
+      withClientLeasePayload(payload),
+      { silent: true, timeout: 10000 }
+    ))
+    applyLeaseResponse(ack, startedAt, Date.now())
+    const latency = Date.now() - startedAt
+    updateNetworkStatus(latency > 2500 ? 'DEGRADED' : 'ONLINE', latency)
+
+    if (!observeSnapshotAck(
+      ack,
+      payload?.clientSequence || payload?.snapshotVersion,
+      snapshotItemEditVersion(item)
+    )) {
+      await handleSnapshotConflict(item, ack)
+      scheduleQueueFlush(retryDelayForAttempt(item?.attemptCount || 0))
+      return { accepted: false, conflict: true }
+    }
+
+    syncState.lastSyncedAt = Math.max(
+      Number(syncState.lastSyncedAt || 0),
+      Number(item?.occurredAt || payload?.clientTimestamp || 0)
+    )
+    await persistDraftState({
+      updatedAt: syncState.updatedAt || Date.now(),
+      lastSyncedAt: syncState.lastSyncedAt,
+      lastServerAckAt: ack?.serverReceivedAt || null,
+      snapshotVersion: Number(ack?.snapshotVersion || payload?.snapshotVersion || 0),
+      serverRevision: syncState.serverRevision,
+      dirty: Number(syncState.editVersion || 0)
+        > Number(syncState.confirmedEditVersion || 0)
+    })
+    if (item?.id) {
+      await deleteSyncItem(item.id)
+    }
+    return { accepted: true, ack }
+  } catch (error) {
+    if (await handleExamClientLeaseError(error)) {
+      return { accepted: false, leaseConflict: true }
+    }
+    if (!isRecoverableNetworkError(error)) {
+      const message = error?.message || '同步失败'
+      if (error?.code === 'EXAM_SESSION_ENDED') {
+        const evidenceExpiresAt = Date.now() + OFFLINE_EVIDENCE_RETENTION_MS
+        await saveSubmissionEvidence({
+          userId: syncState.userId,
+          examId,
+          answers: payload?.answers || buildAnswerMapFromState(),
+          snapshotVersion: payload?.clientSequence || payload?.snapshotVersion,
+          serverRevision: syncState.serverRevision,
+          failureCode: error.code,
+          expiresAt: evidenceExpiresAt
+        })
+        if (item?.id) {
+          await updateSyncItem({
+            ...item,
+            terminal: true,
+            failureCode: error.code,
+            evidenceExpiresAt,
+            lastError: message,
+            nextAttemptAt: null
+          })
+        }
+      } else if (item?.id) {
+        await deleteSyncItem(item.id)
+      }
+      syncState.syncErrorAt = Date.now()
+      syncState.lastSyncErrorMessage = message
+      return { accepted: false, terminal: error?.code === 'EXAM_SESSION_ENDED' }
+    }
+    if (item?.id) {
+      await updateSyncItem({
+        ...item,
+        attemptCount: Number(item.attemptCount || 0) + 1,
+        nextAttemptAt: Date.now() + retryDelayForAttempt(Number(item.attemptCount || 0) + 1),
+        lastError: error?.message || '同步失败'
+      })
+    } else {
+      await queueSnapshotSync(payload, snapshotItemEditVersion(item))
+    }
+    markNetworkFailure(error)
+    return { accepted: false, retryable: true }
+  } finally {
+    syncState.syncing = false
+  }
+}
+
+setSnapshotSender(sendSnapshotItem)
+
+const flushAntiCheatItem = async (item) => {
+  const originalPayload = item.payload?.payload
+  let parsedPayload = {}
+  try {
+    parsedPayload = originalPayload ? JSON.parse(originalPayload) : {}
+  } catch {
+    parsedPayload = { rawPayload: originalPayload }
+  }
+  await antiCheatApi(examId, {
+    eventType: item.payload?.eventType,
+    durationMs: item.payload?.durationMs || 0,
+    payload: JSON.stringify({
+      ...parsedPayload,
+      occurredAt: item.payload?.occurredAt || item.occurredAt,
+      replayed: true,
+      replayedAt: Date.now(),
+      offlineDurationMs: Math.max(0, Date.now() - Number(item.payload?.occurredAt || item.occurredAt || Date.now()))
+    }),
+    evidenceJson: item.payload?.evidenceJson || null
+  }, { silent: true, timeout: 10000 })
+}
+
+const preserveExpiredSnapshotItem = async (item) => {
+  const evidenceExpiresAt = Date.now() + OFFLINE_EVIDENCE_RETENTION_MS
+  const payload = item?.payload || {}
+  await saveSubmissionEvidence({
+    userId: syncState.userId,
+    examId,
+    answers: payload.answers || buildAnswerMapFromState(),
+    snapshotVersion: payload.clientSequence || payload.snapshotVersion,
+    serverRevision: syncState.serverRevision,
+    failureCode: 'LOCAL_ANSWER_AFTER_DEADLINE',
+    attemptedAt: item?.occurredAt || Date.now(),
+    expiresAt: evidenceExpiresAt
+  })
+  await updateSyncItem({
+    ...item,
+    terminal: true,
+    failureCode: 'LOCAL_ANSWER_AFTER_DEADLINE',
+    evidenceExpiresAt,
+    lastError: '考试已截止，未确认的本地答案已保留为证据',
+    nextAttemptAt: null
+  })
+}
+
 const flushSyncQueue = async ({ force = false } = {}) => {
   if (!syncState.userId || networkState.flushing) {
     return false
@@ -1531,96 +1744,48 @@ const flushSyncQueue = async ({ force = false } = {}) => {
   const now = Date.now()
   const dueItems = items.filter((item) => !item.terminal
     && (force || !item.nextAttemptAt || item.nextAttemptAt <= now))
-  if (!dueItems.length) {
+  const snapshotItems = items.filter((item) => item.type === 'SNAPSHOT' && !item.terminal)
+    .sort((left, right) => Number(left.occurredAt || 0) - Number(right.occurredAt || 0))
+  const latestSnapshot = snapshotItems.at(-1)
+  const expiredSnapshotPending = latestSnapshot && isExamExpiredLocally()
+  if (!dueItems.length && !expiredSnapshotPending) {
     return true
   }
   networkState.flushing = true
   updateNetworkStatus('RECONNECTING')
   try {
-    for (const item of dueItems) {
+    if (latestSnapshot && isExamExpiredLocally()) {
+      await Promise.all(
+        snapshotItems.slice(0, -1).map((item) => deleteSyncItem(item.id))
+      )
+      await preserveExpiredSnapshotItem(latestSnapshot)
+    } else if (latestSnapshot && (force || !latestSnapshot.nextAttemptAt || latestSnapshot.nextAttemptAt <= now)) {
+      await Promise.all(
+        snapshotItems.slice(0, -1).map((item) => deleteSyncItem(item.id))
+      )
+      await enqueueSnapshot(latestSnapshot)
+    }
+
+    for (const item of dueItems.filter((candidate) => candidate.type === 'ANTI_CHEAT')) {
       try {
-        if (item.type === 'SNAPSHOT') {
-          const validationError = answerPayloadValidationError(item.payload)
-          if (validationError) {
-            const error = new Error(validationError)
-            error.isBusinessError = true
-            throw error
-          }
-          const startedAt = Date.now()
-          const ack = await runLeaseRequest(() => snapshotApi(
-            examId,
-            withClientLeasePayload(item.payload),
-            { silent: true, timeout: 10000 }
-          ))
-          applyLeaseResponse(ack, startedAt, Date.now())
-          if (!observeSnapshotAck(ack, item.payload?.clientSequence || item.payload?.snapshotVersion)) {
-            item.payload = {
-              ...item.payload,
-              baseServerRevision: Number(ack?.serverRevision || 0) || undefined
-            }
-            item.lastError = '服务器草稿版本已更新，等待按最新版本重试'
-            item.nextAttemptAt = Date.now() + retryDelayForAttempt(item.attemptCount)
-            await updateSyncItem(item)
-            break
-          }
-          syncState.lastSyncedAt = Math.max(
-            Number(syncState.lastSyncedAt || 0),
-            Number(item.occurredAt || item.payload?.clientTimestamp || 0)
-          )
-        } else if (item.type === 'ANTI_CHEAT') {
-          const originalPayload = item.payload?.payload
-          let parsedPayload = {}
-          try {
-            parsedPayload = originalPayload ? JSON.parse(originalPayload) : {}
-          } catch {
-            parsedPayload = { rawPayload: originalPayload }
-          }
-          await antiCheatApi(examId, {
-            eventType: item.payload?.eventType,
-            durationMs: item.payload?.durationMs || 0,
-            payload: JSON.stringify({
-              ...parsedPayload,
-              occurredAt: item.payload?.occurredAt || item.occurredAt,
-              replayed: true,
-              replayedAt: Date.now(),
-              offlineDurationMs: Math.max(0, Date.now() - Number(item.payload?.occurredAt || item.occurredAt || Date.now()))
-            }),
-            evidenceJson: item.payload?.evidenceJson || null
-          }, { silent: true, timeout: 10000 })
-        }
+        await flushAntiCheatItem(item)
         await deleteSyncItem(item.id)
       } catch (error) {
         if (await handleExamClientLeaseError(error)) {
-          break
+          continue
         }
         if (!isRecoverableNetworkError(error)) {
-          item.lastError = error?.message || '同步失败'
-          if (item.type === 'SNAPSHOT' && error?.code === 'EXAM_SESSION_ENDED') {
-            item.terminal = true
-            item.failureCode = error.code
-            item.nextAttemptAt = null
-            item.evidenceExpiresAt = Date.now() + OFFLINE_EVIDENCE_RETENTION_MS
-            await saveSubmissionEvidence({
-              userId: syncState.userId,
-              examId,
-              answers: item.payload?.answers || buildAnswerMapFromState(),
-              snapshotVersion: item.payload?.clientSequence || item.payload?.snapshotVersion,
-              serverRevision: syncState.serverRevision,
-              failureCode: error.code,
-              expiresAt: item.evidenceExpiresAt
-            })
-            await updateSyncItem(item)
-          } else {
-            await deleteSyncItem(item.id)
-          }
+          await deleteSyncItem(item.id)
           syncState.syncErrorAt = Date.now()
-          syncState.lastSyncErrorMessage = item.lastError
-          break
+          syncState.lastSyncErrorMessage = error?.message || '同步失败'
+          continue
         }
-        item.attemptCount = Number(item.attemptCount || 0) + 1
-        item.nextAttemptAt = Date.now() + retryDelayForAttempt(item.attemptCount)
-        item.lastError = error?.message || '同步失败'
-        await updateSyncItem(item)
+        await updateSyncItem({
+          ...item,
+          attemptCount: Number(item.attemptCount || 0) + 1,
+          nextAttemptAt: Date.now() + retryDelayForAttempt(Number(item.attemptCount || 0) + 1),
+          lastError: error?.message || '同步失败'
+        })
         markNetworkFailure(error)
         break
       }
@@ -1646,7 +1811,7 @@ const scheduleQueueFlush = (delayMs = 0) => {
 }
 
 const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
-  if (!syncState.userId || !syncState.initialized || syncState.syncing) {
+  if (!syncState.userId || !syncState.initialized) {
     return false
   }
   if (!navigator.onLine) {
@@ -1657,10 +1822,12 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
     await flushSyncQueue()
     return false
   }
+  if (isExamExpiredLocally()) {
+    return false
+  }
 
   syncState.syncErrorAt = null
   syncState.lastSyncErrorMessage = ''
-  const syncVersion = Math.max(syncState.updatedAt || 0, (syncState.snapshotVersion || 0) + 1, Date.now())
   const payload = withoutClientLeasePayload(buildSnapshotPayload())
   const validationError = answerPayloadValidationError(payload)
   if (validationError) {
@@ -1671,63 +1838,16 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
     }
     return false
   }
-  syncState.syncing = true
-  try {
-    const startedAt = Date.now()
-    const ack = await runLeaseRequest(() => snapshotApi(
-      examId,
-      withClientLeasePayload(payload),
-      { silent: true, timeout: 10000 }
-    ))
-    applyLeaseResponse(ack, startedAt, Date.now())
-    const latency = Date.now() - startedAt
-    updateNetworkStatus(latency > 2500 ? 'DEGRADED' : 'ONLINE', latency)
-
-    if (!observeSnapshotAck(ack, syncVersion)) {
-      await persistDraftState({
-        serverRevision: syncState.serverRevision,
-        dirty: true
-      })
-      syncState.lastSyncErrorMessage = '服务器草稿版本已更新，正在按最新版本重新同步'
-      await queueSnapshotSync({
-        ...payload,
-        baseServerRevision: syncState.serverRevision
-      })
-      scheduleQueueFlush(retryDelayForAttempt(0))
-      return false
-    }
-
-    const latestUpdatedAt = syncState.updatedAt || syncVersion
-    await persistDraftState({
-      updatedAt: latestUpdatedAt,
-      lastSyncedAt: syncVersion,
-      lastServerAckAt: ack?.serverReceivedAt || null,
-      snapshotVersion: Number(ack?.snapshotVersion || syncVersion),
-      serverRevision: syncState.serverRevision,
-      dirty: latestUpdatedAt > syncVersion
-    })
-    await flushSyncQueue({ force: true })
-
-    if (notify) {
-      ElMessage.success('答题进度已同步到服务器')
-    }
-    return true
-  } catch (error) {
-    syncState.syncErrorAt = Date.now()
-    syncState.lastSyncErrorMessage = error?.message || '服务器同步失败'
-    if (await handleExamClientLeaseError(error)) {
-      return false
-    }
-    if (!isRecoverableNetworkError(error)) {
-      return false
-    }
-    await queueSnapshotSync(payload)
-    markNetworkFailure(error)
-    scheduleQueueFlush(retryDelayForAttempt(0))
-    return false
-  } finally {
-    syncState.syncing = false
+  const result = await enqueueSnapshot({
+    type: 'SNAPSHOT',
+    payload,
+    editVersion: syncState.editVersion,
+    occurredAt: Date.now()
+  })
+  if (notify && result?.accepted) {
+    ElMessage.success('答题进度已同步到服务器')
   }
+  return Boolean(result?.accepted && !syncState.dirty)
 }
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -2423,7 +2543,10 @@ const bootstrapExam = async () => {
   restoreSnapshotRevision({
     snapshotVersion: localDraft?.snapshotVersion || 0,
     clientSequence: localDraft?.clientSequence || 0,
-    serverRevision: localDraft?.serverRevision || data?.serverRevision || 0
+    serverRevision: localDraft?.serverRevision || data?.serverRevision || 0,
+    editVersion: localDraft?.editVersion || 0,
+    confirmedEditVersion: localDraft?.confirmedEditVersion || 0,
+    dirty: Boolean(localDraft?.dirty)
   })
   syncState.lastServerAckAt = localDraft?.lastServerAckAt || null
 
@@ -2512,7 +2635,15 @@ watch(answers, () => {
   if (endingExam.value || !syncState.initialized || !state.questions.length) {
     return
   }
+  markSnapshotEdited()
   scheduleDraftSave({ dirty: true, updateAnswerTimestamp: true })
+  if (!isExamExpiredLocally() && Number.isFinite(Number(examDeadlineEpochMs.value))
+    && Number(examDeadlineEpochMs.value) - serverClock.nowMs() <= SNAPSHOT_LAST_MINUTE_MS) {
+    scheduleSnapshot(
+      () => syncDirtyDraft({ force: true }),
+      { debounceMs: SNAPSHOT_DEBOUNCE_MS, maxWaitMs: SNAPSHOT_MAX_WAIT_MS }
+    )
+  }
 }, { deep: true })
 
 watch(visibleQuestions, (questions) => {

@@ -45,9 +45,15 @@ public class ExamSnapshotService {
     public SnapshotAckView save(Long examId, Long studentId, Long sessionId,
                                 LocalDateTime deadline, LocalDateTime receivedAt,
                                 SnapshotRequest request) {
+        // 规范化、压缩和哈希不持有数据库锁；只有验收和落库进入独立事务。
+        SnapshotDraftPayloadService.PreparedDraft prepared = draftPayloads.prepare(request.getAnswers());
         SnapshotDraftPayloadService.Acceptance acceptance = draftPayloads.accept(
-            sessionId, examId, studentId, request
+            sessionId, examId, studentId, request, prepared
         );
+        // 兼容只替换旧四参数入口的隔离测试和短期滚动实例。
+        if (acceptance == null) {
+            acceptance = draftPayloads.accept(sessionId, examId, studentId, request);
+        }
         long version = acceptance.storedClientSequence();
         if (!acceptance.accepted()) {
             return ack(request, acceptance);

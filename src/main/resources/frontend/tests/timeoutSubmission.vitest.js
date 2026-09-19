@@ -76,6 +76,65 @@ describe('快照与交卷状态', () => {
     expect(createSubmissionPlan({ online: false, deadlineReached: true }).mode)
       .toBe('OFFLINE_DEADLINE_WAIT')
   })
+
+  it('ACK 只确认对应编辑版本，较新的本地编辑仍保持 dirty', () => {
+    const { syncState, markEdited, observeAck } = useExamSnapshotSync()
+    const firstEdit = markEdited()
+    expect(observeAck({ accepted: true, storedClientSequence: 1 }, 1, firstEdit)).toBe(true)
+    expect(syncState.dirty).toBe(false)
+
+    const secondEdit = markEdited()
+    expect(secondEdit).toBe(firstEdit + 1)
+    expect(observeAck({ accepted: true, storedClientSequence: 2 }, 2, firstEdit)).toBe(true)
+    expect(syncState.confirmedEditVersion).toBe(firstEdit)
+    expect(syncState.dirty).toBe(true)
+  })
+
+  it('完整快照请求只允许一个在途，并在完成后发送最新待发送版本', async () => {
+    const { setSnapshotSender, enqueueSnapshot } = useExamSnapshotSync()
+    const pending = []
+    const sender = vi.fn((item) => new Promise((resolve) => {
+      pending.push({ item, resolve })
+    }))
+    setSnapshotSender(sender)
+
+    const first = enqueueSnapshot({ clientSequence: 1 })
+    const second = enqueueSnapshot({ clientSequence: 2 })
+    await Promise.resolve()
+    expect(sender).toHaveBeenCalledTimes(1)
+    expect(sender).toHaveBeenLastCalledWith({ clientSequence: 1 })
+
+    pending[0].resolve({ accepted: true })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(sender).toHaveBeenCalledTimes(2)
+    expect(sender).toHaveBeenLastCalledWith({ clientSequence: 2 })
+
+    pending[1].resolve({ accepted: true })
+    await Promise.all([first, second])
+  })
+
+  it('持续编辑时仍在最大等待时间触发一次快照调度', async () => {
+    vi.useFakeTimers()
+    try {
+      const { setSnapshotSender, scheduleSnapshot } = useExamSnapshotSync()
+      const sender = vi.fn().mockResolvedValue({ accepted: true })
+      setSnapshotSender(sender)
+      const factory = vi.fn(() => ({ clientSequence: sender.mock.calls.length + 1 }))
+
+      scheduleSnapshot(factory, { debounceMs: 500, maxWaitMs: 2_000 })
+      vi.advanceTimersByTime(400)
+      scheduleSnapshot(factory, { debounceMs: 500, maxWaitMs: 2_000 })
+      vi.advanceTimersByTime(400)
+      scheduleSnapshot(factory, { debounceMs: 500, maxWaitMs: 2_000 })
+      vi.advanceTimersByTime(1_200)
+      await vi.runOnlyPendingTimersAsync()
+
+      expect(factory).toHaveBeenCalledTimes(1)
+      expect(sender).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('本地申诉证据保留', () => {
@@ -102,7 +161,8 @@ describe('本地申诉证据保留', () => {
     await saveDraft({
       userId: 'u2', examId: 'refresh', answers: { 1: 'A' }, markedQuestionIds: [],
       snapshotVersion: 7, clientSequence: 8, serverRevision: 3,
-      pendingSubmitIntent: { attemptedAt: 1_000 }, dirty: true
+      pendingSubmitIntent: { attemptedAt: 1_000 }, dirty: true,
+      editVersion: 9, confirmedEditVersion: 8
     })
     const restored = await loadDraft('u2', 'refresh')
     expect(restored).toMatchObject({
@@ -110,6 +170,8 @@ describe('本地申诉证据保留', () => {
       clientSequence: 8,
       serverRevision: 3,
       dirty: true,
+      editVersion: 9,
+      confirmedEditVersion: 8,
       pendingSubmitIntent: { attemptedAt: 1_000 }
     })
   })

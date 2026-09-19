@@ -110,6 +110,92 @@ public class TimeoutTaskRepository {
         return count == null ? 0L : count;
     }
 
+    /**
+     * 返回有界对账候选。健康的 PENDING 任务不进入结果集，避免对账每轮重复扫描全部历史任务。
+     */
+    public List<ReconcileCandidate> findReconcileCandidates(int shardIndex, int shardTotal,
+                                                              long afterSessionId, int limit) {
+        validateShard(shardIndex, shardTotal);
+        return jdbc.query(
+            """
+                select s.id session_id,s.exam_id,s.student_id,s.deadline_time,
+                       sub.id submission_id,t.id task_id,t.status task_status,
+                       sub.status submission_status
+                  from exam_session s
+                  left join submission sub
+                    on sub.exam_id=s.exam_id and sub.student_id=s.student_id
+                  left join submission_timeout_task t on t.session_id=s.id
+                  left join submission_final_payload fp on fp.submission_id=sub.id
+                 where s.id>?
+                   and mod(s.id,?)=?
+                   and (
+                       (s.status in ('ANSWERING','AUTO_SUBMITTING')
+                        and s.deadline_time<=current_timestamp(3)
+                        and sub.status='IN_PROGRESS'
+                        and t.id is null
+                        and fp.submission_id is null
+                        and not exists (
+                            select 1 from outbox_event o
+                             where o.aggregate_type='SUBMISSION'
+                               and o.aggregate_id=cast(sub.id as char)
+                               and o.event_type='SubmissionAccepted'
+                        ))
+                       or (t.status='FAILED' and s.status in ('ANSWERING','AUTO_SUBMITTING'))
+                        or (s.status='SUBMISSION_FAILED' and (t.id is null or t.status<>'FAILED'))
+                       or (t.status='DONE' and (s.status<>'SUBMITTED' or sub.status='IN_PROGRESS'))
+                       or (t.status='PROCESSING' and (t.claim_token is null or t.lease_until is null))
+                   )
+                 order by s.id
+                 limit ?
+                """,
+            (rs, rowNum) -> new ReconcileCandidate(
+                rs.getLong("session_id"), rs.getLong("exam_id"), rs.getLong("student_id"),
+                rs.getObject("deadline_time", LocalDateTime.class),
+                rs.getObject("submission_id", Long.class), rs.getObject("task_id", Long.class),
+                rs.getString("task_status"), rs.getString("submission_status")
+            ),
+            afterSessionId, shardTotal, shardIndex, Math.max(1, Math.min(100, limit))
+        );
+    }
+
+    public int insertMissingTask(ReconcileCandidate candidate) {
+        return jdbc.update(
+            """
+                insert ignore into submission_timeout_task(
+                    id,session_id,exam_id,student_id,submission_id,due_at,status,created_at,updated_at
+                ) values(?,?,?,?,?,?,'PENDING',current_timestamp(3),current_timestamp(3))
+                """,
+            candidate.sessionId(), candidate.sessionId(), candidate.examId(), candidate.studentId(),
+            candidate.submissionId(), candidate.deadline()
+        );
+    }
+
+    public SubmissionFinalState lockSubmissionState(Long examId, Long studentId) {
+        List<SubmissionFinalState> rows = jdbc.query(
+            """
+                select sub.id,sub.status,
+                       fp.submission_id final_payload_id,
+                       exists(
+                           select 1 from outbox_event o
+                            where o.aggregate_type='SUBMISSION'
+                              and o.aggregate_id=cast(sub.id as char)
+                              and o.event_type='SubmissionAccepted'
+                       ) accepted_event
+                  from submission sub
+                  left join submission_final_payload fp on fp.submission_id=sub.id
+                 where sub.exam_id=? and sub.student_id=?
+                 limit 1
+                 for update
+                """,
+            (rs, rowNum) -> new SubmissionFinalState(
+                rs.getLong("id"), rs.getString("status"),
+                rs.getObject("final_payload_id", Long.class), rs.getBoolean("accepted_event")
+            ),
+            examId, studentId
+        );
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
     public ClaimSelection lockClaimable(int shardIndex, int shardTotal, int limit, long crossShardDelayMs) {
         validateShard(shardIndex, shardTotal);
         int safeLimit = Math.max(1, limit);
@@ -429,6 +515,18 @@ public class TimeoutTaskRepository {
         );
     }
 
+    public CompletionTimes completionTimes(Long taskId) {
+        List<CompletionTimes> rows = jdbc.query(
+            "select due_at,completed_at from submission_timeout_task where id=?",
+            (rs, rowNum) -> new CompletionTimes(
+                rs.getObject("due_at", LocalDateTime.class),
+                rs.getObject("completed_at", LocalDateTime.class)
+            ),
+            taskId
+        );
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
     public int markDoneLocked(Long taskId) {
         return jdbc.update(
             """
@@ -546,16 +644,20 @@ public class TimeoutTaskRepository {
                 select coalesce(sum(status='PENDING'),0) pending_count,
                        coalesce(sum(status='PROCESSING'),0) processing_count,
                        coalesce(sum(status='FAILED'),0) failed_count,
+                       coalesce(sum(status in ('PENDING','PROCESSING')
+                                  and due_at<current_timestamp(3)),0) overdue_count,
                        coalesce(max(case
                            when status in ('PENDING','PROCESSING') and due_at<current_timestamp(3)
                            then timestampdiff(microsecond,due_at,current_timestamp(3)) div 1000
                            else 0 end),0) oldest_overdue_ms
                   from submission_timeout_task
+                 where status in ('PENDING','PROCESSING','FAILED')
                 """,
             (rs, rowNum) -> new TimeoutSubmissionBacklog(
                 rs.getLong("pending_count"),
                 rs.getLong("processing_count"),
                 rs.getLong("failed_count"),
+                rs.getLong("overdue_count"),
                 rs.getLong("oldest_overdue_ms")
             )
         );
@@ -570,6 +672,27 @@ public class TimeoutTaskRepository {
 
     public record ClaimSelection(List<TaskCandidate> candidates, int ownPending, int crossPending,
                                  int ownLeaseRecovered, int crossLeaseRecovered) {
+    }
+
+    public record ReconcileCandidate(Long sessionId, Long examId, Long studentId,
+                                     LocalDateTime deadline, Long submissionId, Long taskId,
+                                     String taskStatus, String submissionStatus) {
+    }
+
+    public enum ReconcileOutcome {
+        REPAIRED,
+        SKIPPED,
+        FAILED
+    }
+
+    public record SubmissionFinalState(Long submissionId, String status,
+                                       Long finalPayloadId, boolean acceptedEvent) {
+        public boolean hasFinalResult() {
+            return finalPayloadId != null || acceptedEvent;
+        }
+    }
+
+    public record CompletionTimes(LocalDateTime dueAt, LocalDateTime completedAt) {
     }
 
     public record TaskCandidate(Long id, Long sessionId, Long examId, Long studentId,
@@ -624,6 +747,10 @@ public class TimeoutTaskRepository {
     }
 
     public record TimeoutSubmissionBacklog(long pending, long processing,
-                                            long failed, long oldestOverdueMs) {
+                                            long failed, long overdue, long oldestOverdueMs) {
+        public TimeoutSubmissionBacklog(long pending, long processing,
+                                        long failed, long oldestOverdueMs) {
+            this(pending, processing, failed, 0L, oldestOverdueMs);
+        }
     }
 }
