@@ -19,15 +19,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -146,14 +146,14 @@ public class TimeoutSubmissionCoordinator {
                 break;
             }
             claimed.addAndGet(claims.size());
-            List<CompletableFuture<Void>> futures = new ArrayList<>(claims.size());
+            List<Future<?>> futures = new ArrayList<>(claims.size());
             try {
                 for (TimeoutTaskClaim claim : claims) {
-                    futures.add(CompletableFuture.runAsync(() -> {
+                    futures.add(executor.submit(() -> {
                         if (process(claim)) {
                             completed.incrementAndGet();
                         }
-                    }, executor));
+                    }));
                 }
             } catch (RejectedExecutionException exception) {
                 retryOutstandingClaims(claims, futures, exception);
@@ -315,10 +315,12 @@ public class TimeoutSubmissionCoordinator {
         long taskDeadline = started + Duration.ofMillis(properties.safeTaskTimeoutMs()).toNanos();
         AtomicBoolean leaseLost = new AtomicBoolean();
         Duration renewInterval = Duration.ofMillis(properties.safeLeaseRenewIntervalMs());
-        ScheduledFuture<?> renewal = leaseScheduler.scheduleAtFixedRate(
-            () -> renewLease(claim, leaseLost, started), Instant.now().plus(renewInterval), renewInterval
-        );
         try {
+            claim.registerRenewal(leaseScheduler.scheduleAtFixedRate(
+                () -> renewLease(claim, leaseLost, started),
+                Instant.now().plus(renewInterval),
+                renewInterval
+            ));
             observe(() -> observation.onClaimProcessingStarted(
                 claim.examId(), claim.taskId(), claim.attempt(), claim.claimToken(),
                 System.nanoTime() - started
@@ -327,7 +329,7 @@ public class TimeoutSubmissionCoordinator {
             SnapshotDraft draft = snapshots.loadLatestDraft(claim.examId(), claim.studentId(), claim.submissionId());
             EncodedFinalAnswers encoded = finalPayloads.encode(draft.answers(), draft.version());
             metrics.recordStage("draft_load", Duration.ofNanos(System.nanoTime() - sDraft));
-            requireWithinTaskBudget(taskDeadline, leaseLost);
+            requireWithinTaskBudget(claim, taskDeadline, leaseLost);
             long sTx = System.nanoTime();
             Boolean completed = transactions.execute(status -> finalizeClaim(claim, encoded));
             metrics.recordStage("transaction_total", Duration.ofNanos(System.nanoTime() - sTx));
@@ -348,11 +350,14 @@ public class TimeoutSubmissionCoordinator {
             metrics.recordFinalization(Duration.ofNanos(System.nanoTime() - started), "failure");
             return false;
         } finally {
-            renewal.cancel(false);
+            claim.cancelRenewal();
         }
     }
 
     private void renewLease(TimeoutTaskClaim claim, AtomicBoolean leaseLost, long startedNanos) {
+        if (claim.cancellationRequested()) {
+            return;
+        }
         try {
             if (tasks.renewLease(claim.taskId(), claim.claimToken(), properties.safeLeaseMs()) != 1) {
                 leaseLost.set(true);
@@ -382,7 +387,11 @@ public class TimeoutSubmissionCoordinator {
         }
     }
 
-    private void requireWithinTaskBudget(long deadlineNanos, AtomicBoolean leaseLost) {
+    private void requireWithinTaskBudget(TimeoutTaskClaim claim, long deadlineNanos,
+                                         AtomicBoolean leaseLost) {
+        if (claim.cancellationRequested()) {
+            throw new IllegalStateException("超时交卷任务已取消");
+        }
         if (leaseLost.get()) {
             throw new IllegalStateException("超时交卷任务租约续租失败");
         }
@@ -392,11 +401,24 @@ public class TimeoutSubmissionCoordinator {
     }
 
     private boolean awaitBatch(List<TimeoutTaskClaim> claims,
-                               List<CompletableFuture<Void>> futures,
+                               List<Future<?>> futures,
                                long remainingNanos) {
         try {
-            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
-                .get(remainingNanos, TimeUnit.NANOSECONDS);
+            long deadlineNanos = System.nanoTime() + remainingNanos;
+            for (int index = 0; index < futures.size(); index += 1) {
+                Future<?> future = futures.get(index);
+                long waitNanos = deadlineNanos - System.nanoTime();
+                if (waitNanos <= 0) {
+                    throw new TimeoutException("超时交卷批次超过任务总预算");
+                }
+                try {
+                    future.get(waitNanos, TimeUnit.NANOSECONDS);
+                } catch (ExecutionException exception) {
+                    metrics.increment("worker_failed");
+                    log.warn("Timeout submission batch worker failed: taskId={}",
+                        claims.get(index).taskId(), exception.getCause());
+                }
+            }
             return true;
         } catch (TimeoutException exception) {
             metrics.increment("job_budget_exhausted");
@@ -406,22 +428,19 @@ public class TimeoutSubmissionCoordinator {
             Thread.currentThread().interrupt();
             retryOutstandingClaims(claims, futures, exception);
             return false;
-        } catch (ExecutionException exception) {
-            metrics.increment("worker_failed");
-            log.warn("Timeout submission batch worker failed", exception.getCause());
-            return true;
         }
     }
 
     private void retryOutstandingClaims(List<TimeoutTaskClaim> claims,
-                                        List<CompletableFuture<Void>> futures,
-                                        Exception exception) {
+                                         List<Future<?>> futures,
+                                         Exception exception) {
         List<TimeoutTaskClaim> outstanding = new ArrayList<>();
         for (int index = 0; index < claims.size(); index += 1) {
             if (index >= futures.size() || !futures.get(index).isDone()) {
                 outstanding.add(claims.get(index));
             }
         }
+        outstanding.forEach(TimeoutTaskClaim::cancelExecution);
         futures.forEach(future -> future.cancel(true));
         RuntimeException failure = exception instanceof RuntimeException runtimeException
             ? runtimeException
@@ -434,7 +453,7 @@ public class TimeoutSubmissionCoordinator {
         TaskRow task = tasks.lockById(claim.taskId());
         metrics.recordStage("task_lock", Duration.ofNanos(System.nanoTime() - sTaskLock));
         LocalDateTime now = task != null && task.dbNow() != null ? task.dbNow() : dbNow();
-        if (task == null || !task.ownedBy(claim.claimToken())
+        if (claim.cancellationRequested() || task == null || !task.ownedBy(claim.claimToken())
             || task.leaseUntil() == null || !task.leaseUntil().isAfter(now)) {
             return false;
         }
@@ -611,7 +630,38 @@ public class TimeoutSubmissionCoordinator {
     }
 
     private record TimeoutTaskClaim(Long taskId, Long sessionId, Long examId, Long studentId,
-                                    Long submissionId, LocalDateTime dueAt, String claimToken, int attempt) {
+                                    Long submissionId, LocalDateTime dueAt, String claimToken,
+                                    int attempt, AtomicBoolean cancellation,
+                                    AtomicReference<ScheduledFuture<?>> renewal) {
+        private TimeoutTaskClaim(Long taskId, Long sessionId, Long examId, Long studentId,
+                                 Long submissionId, LocalDateTime dueAt, String claimToken,
+                                 int attempt) {
+            this(taskId, sessionId, examId, studentId, submissionId, dueAt, claimToken, attempt,
+                new AtomicBoolean(), new AtomicReference<>());
+        }
+
+        private void registerRenewal(ScheduledFuture<?> scheduled) {
+            renewal.set(scheduled);
+            if (cancellation.get()) {
+                scheduled.cancel(false);
+            }
+        }
+
+        private boolean cancellationRequested() {
+            return cancellation.get();
+        }
+
+        private void cancelExecution() {
+            cancellation.set(true);
+            cancelRenewal();
+        }
+
+        private void cancelRenewal() {
+            ScheduledFuture<?> scheduled = renewal.getAndSet(null);
+            if (scheduled != null) {
+                scheduled.cancel(false);
+            }
+        }
     }
 
     private record SubmissionIdentity(Long id, Long examId, Long studentId) {

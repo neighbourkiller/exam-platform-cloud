@@ -369,6 +369,12 @@ let inactivityEventOpen = false
 let leaseRequestTail = Promise.resolve()
 let submissionPromise = null
 let lastLeaseRenewedAt = 0
+const entryAbortController = new AbortController()
+const cancelEntryFlow = () => {
+  if (!entryAbortController.signal.aborted) {
+    entryAbortController.abort()
+  }
+}
 const recentEventTimes = new Map()
 const cameraProctoring = useCameraProctoring({
   reportEvent: (eventType, durationMs, payload, evidence = []) =>
@@ -1169,6 +1175,7 @@ const handleExamClientLeaseError = async (error) => {
   if (!isExamClientLeaseError(error) || leaseState.conflict) {
     return isExamClientLeaseError(error)
   }
+  cancelEntryFlow()
   leaseState.conflict = true
   allowLeaveExam.value = true
   stopExamRuntimeTimers()
@@ -1725,6 +1732,29 @@ const syncDirtyDraft = async ({ force = false, notify = false } = {}) => {
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
+const entryCancelledError = () => {
+  const error = new Error('考试入场已取消')
+  error.code = 'ERR_CANCELED'
+  return error
+}
+
+const waitForEntryDelay = (milliseconds) => new Promise((resolve, reject) => {
+  if (entryAbortController.signal.aborted) {
+    reject(entryCancelledError())
+    return
+  }
+  let timerId = null
+  const onAbort = () => {
+    clearTimeout(timerId)
+    reject(entryCancelledError())
+  }
+  timerId = setTimeout(() => {
+    entryAbortController.signal.removeEventListener('abort', onAbort)
+    resolve()
+  }, Math.max(0, milliseconds))
+  entryAbortController.signal.addEventListener('abort', onAbort, { once: true })
+})
+
 const requestSubmissionStatus = async (stopAt) => {
   const remaining = Math.max(500, stopAt - Date.now())
   const requestStartedAt = Date.now()
@@ -1781,23 +1811,26 @@ const runEntryRequest = async (request, phase) => {
   const startedAt = Date.now()
   let attempt = 0
   while (true) {
+    if (entryAbortController.signal.aborted) throw entryCancelledError()
     try {
       const requestStartedAt = Date.now()
       const response = await request()
+      if (entryAbortController.signal.aborted) throw entryCancelledError()
       serverClock.observe(response, requestStartedAt, Date.now())
       return response
     } catch (error) {
+      if (entryAbortController.signal.aborted) throw error
       if (!isRetryableEntryError(error)) throw error
       const elapsed = Date.now() - startedAt
       if (elapsed >= ENTRY_RETRY_TIMEOUT_MS) throw error
       const serverDelay = entryRetryAfterMs(error)
       const delayMs = fullJitterDelay(attempt, serverDelay)
       if (elapsed + delayMs > ENTRY_RETRY_TIMEOUT_MS) throw error
-      const waitSeconds = Math.max(1, Math.ceil((serverDelay || delayMs) / 1000))
+      const waitSeconds = Math.max(1, Math.ceil(delayMs / 1000))
       entryProgressText.value = phase === 'activate'
         ? `已进入候场，约 ${waitSeconds} 秒后再次尝试激活。个人计时尚未开始。`
         : '当前进入人数较多，系统正在自动重试，请勿刷新页面。'
-      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      await waitForEntryDelay(delayMs)
       attempt += 1
     }
   }
@@ -1815,7 +1848,7 @@ const waitForScheduledActivation = async (prepared) => {
   while (Date.now() < readyAt) {
     const remainingMs = readyAt - Date.now()
     entryProgressText.value = `候场成功，约 ${Math.max(1, Math.ceil(remainingMs / 1000))} 秒后自动激活。个人计时尚未开始。`
-    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, remainingMs)))
+    await waitForEntryDelay(Math.min(1000, remainingMs))
   }
 }
 
@@ -1835,7 +1868,11 @@ const handleTerminalEntryState = async (status) => {
 const enterExamV2 = async (clientLease) => {
   const clientId = clientLease?.clientId || leaseState.clientId
   const prepared = await runEntryRequest(
-    () => prepareExamEntryApi(examId, { clientId }, { silent: true, timeout: 10000 }),
+    () => prepareExamEntryApi(examId, { clientId }, {
+      silent: true,
+      timeout: 10000,
+      signal: entryAbortController.signal
+    }),
     'prepare'
   )
   if (prepared?.status === 'TERMINATED') {
@@ -1855,7 +1892,11 @@ const enterExamV2 = async (clientLease) => {
       clientId,
       entryToken: prepared.entryToken,
       leaseToken: clientLease?.leaseToken || leaseState.leaseToken || null
-    }, { silent: true, timeout: 10000 }),
+    }, {
+      silent: true,
+      timeout: 10000,
+      signal: entryAbortController.signal
+    }),
     'activate'
   )
   if (await handleTerminalEntryState(activated?.status)) return null
@@ -1865,7 +1906,11 @@ const enterExamV2 = async (clientLease) => {
     () => paperDeliveryApi(examId, {
       clientId,
       leaseToken: activated.leaseToken
-    }, { silent: true, timeout: 15000 }),
+    }, {
+      silent: true,
+      timeout: 15000,
+      signal: entryAbortController.signal
+    }),
     'paper-delivery'
   )
   return {
@@ -2277,12 +2322,18 @@ const bootstrapExam = async () => {
     userId: syncState.userId || 'anonymous',
     examId,
     onDuplicate: () => {
+      cancelEntryFlow()
       void handleExamClientLeaseError({
         code: 'EXAM_CLIENT_CONFLICT',
         message: '本场考试已在另一个本机窗口打开，请回到原窗口继续作答。'
       })
     }
   })
+  if (entryAbortController.signal.aborted) {
+    windowGuard.close()
+    windowGuard = null
+    return
+  }
   if (!windowGuard.acquired) {
     await handleExamClientLeaseError({
       code: 'EXAM_CLIENT_CONFLICT',
@@ -2293,7 +2344,9 @@ const bootstrapExam = async () => {
   const localDraft = syncState.userId ? await loadDraft(syncState.userId, examId) : null
   const startLegacyExam = async () => {
     const startedAt = Date.now()
-    const response = await startExamApi(examId, buildClientLeasePayload())
+    const response = await startExamApi(examId, buildClientLeasePayload(), {
+      signal: entryAbortController.signal
+    })
     applyLeaseResponse(response, startedAt, Date.now())
     return response
   }
@@ -2313,6 +2366,9 @@ const bootstrapExam = async () => {
     }
     applyLeaseResponse(data)
   } catch (error) {
+    if (entryAbortController.signal.aborted) {
+      return
+    }
     if (await handleExamClientLeaseError(error)) {
       return
     }
@@ -2339,6 +2395,9 @@ const bootstrapExam = async () => {
     }
     offlineRecoveredMode.value = true
     updateNetworkStatus('OFFLINE')
+  }
+  if (entryAbortController.signal.aborted) {
+    return
   }
   entryPreparing.value = false
   state.examId = String(data?.examId || examId)
@@ -2487,6 +2546,9 @@ onMounted(async () => {
   try {
     await bootstrapExam()
   } catch (error) {
+    if (entryAbortController.signal.aborted) {
+      return
+    }
     if (await handleExamClientLeaseError(error)) {
       return
     }
@@ -2497,6 +2559,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  cancelEntryFlow()
   endingExam.value = true
   void exitFullscreenForExamEnd()
   if (timer) clearInterval(timer)

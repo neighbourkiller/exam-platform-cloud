@@ -12,5 +12,5 @@ src/main/resources/frontend/dist
 .env.*
 deploy/secrets
 documents
-docs
+documents/docs
 *.log

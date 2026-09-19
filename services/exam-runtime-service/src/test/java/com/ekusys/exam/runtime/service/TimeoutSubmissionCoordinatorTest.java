@@ -224,6 +224,39 @@ class TimeoutSubmissionCoordinatorTest {
     }
 
     @Test
+    void jobBudgetInterruptsOutstandingWorker() throws Exception {
+        properties.setMaxRunMs(1_000L);
+        LocalDateTime now = LocalDateTime.of(2026, 8, 8, 20, 0);
+        arrangeClaim(now);
+        CountDownLatch workerStarted = new CountDownLatch(1);
+        CountDownLatch workerInterrupted = new CountDownLatch(1);
+        when(snapshots.loadLatestDraft(eq(2L), eq(3L), any())).thenAnswer(invocation -> {
+            workerStarted.countDown();
+            try {
+                new CountDownLatch(1).await();
+                throw new IllegalStateException("unreachable");
+            } catch (InterruptedException exception) {
+                workerInterrupted.countDown();
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("worker interrupted", exception);
+            }
+        });
+        when(jdbc.queryForObject("select current_timestamp(3)", LocalDateTime.class))
+            .thenReturn(now);
+        when(tasks.markFailure(
+            eq(1L), anyString(), any(), anyInt(), anyString(), anyString(), any()
+        )).thenReturn(1);
+
+        CompletableFuture<Integer> run = CompletableFuture.supplyAsync(
+            () -> coordinator.processDue(0, 1)
+        );
+
+        assertThat(workerStarted.await(1, TimeUnit.SECONDS)).isTrue();
+        assertThat(run.get(2, TimeUnit.SECONDS)).isZero();
+        assertThat(workerInterrupted.await(1, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
     void failedLeaseRenewalPreventsOldWorkerFromFinalizing() {
         properties.setMaxRunMs(4_000L);
         properties.setTaskTimeoutMs(3_000L);

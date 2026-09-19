@@ -3,6 +3,7 @@ package com.ekusys.exam.runtime.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -163,6 +164,7 @@ class ExamClientLeaseServiceTest {
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         verify(jdbc).update(sql.capture(), any(Object[].class));
         assertFalse(sql.getValue().contains("set active_client_token=?"));
+        assertTrue(sql.getValue().contains("deadline_time>current_timestamp(3)"));
     }
 
     @Test

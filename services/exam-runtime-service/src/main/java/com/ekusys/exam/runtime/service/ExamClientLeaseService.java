@@ -434,11 +434,12 @@ public class ExamClientLeaseService {
             """
                 update exam_session
                    set active_client_last_seen=?,active_client_lease_until=?,update_time=?
-                 where id=? and status='ANSWERING' and deadline_time>?
+                 where id=? and status='ANSWERING'
+                   and deadline_time>current_timestamp(3)
                    and active_client_id=? and active_client_token=?
                 """,
             now, now.plusSeconds(properties.safeLeaseTimeoutSeconds()), now,
-            sessionId, now, clientId, leaseToken
+            sessionId, clientId, leaseToken
         );
         if (updated != 1) {
             throw conflict();

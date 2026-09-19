@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
-import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
@@ -107,7 +107,7 @@ class ManualSubmissionServiceTest {
         AtomicInteger attempts = new AtomicInteger();
         org.mockito.Mockito.doAnswer(invocation -> {
             if (attempts.getAndIncrement() == 0) {
-                throw new CannotAcquireLockException("deadlock");
+                throw new DeadlockLoserDataAccessException("deadlock", null);
             }
             TransactionCallback<?> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));

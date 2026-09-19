@@ -26,15 +26,15 @@ export const entryRetryAfterMs = (error) => Number(
 
 export const fullJitterDelay = (attempt, serverDelayMs = 0, random = Math.random) => {
   const cap = Math.min(2000, 200 * (2 ** Math.min(Math.max(0, attempt), 5)))
-  const ceiling = serverDelayMs > 0 ? Math.min(cap, serverDelayMs) : cap
-  return Math.max(50, Math.floor(random() * Math.max(1, ceiling)))
+  const jitter = Math.floor(random() * Math.max(1, cap))
+  return Math.max(50, Math.max(0, serverDelayMs) + jitter)
 }
 
 export const scheduledEntryDelayMs = (prepared = {}) => {
   const serverTime = Date.parse(prepared.serverTime)
   const scheduledTime = Date.parse(prepared.scheduledActivationTime)
   if (!Number.isFinite(serverTime) || !Number.isFinite(scheduledTime)) return 0
-  return Math.max(0, Math.min(11 * 60 * 1000, scheduledTime - serverTime))
+  return Math.max(0, scheduledTime - serverTime)
 }
 
 export const mergePaperDelivery = (delivered = {}) => {

@@ -1,4 +1,5 @@
 const STORAGE_PREFIX = 'exam-client-lease'
+const BROADCAST_ELECTION_MS = 150
 
 const storageKey = (userId, examId) => `${STORAGE_PREFIX}:${String(userId)}:${String(examId)}`
 
@@ -76,10 +77,12 @@ export const clearExamClientLease = (userId, examId) => {
 export const createExamWindowGuard = async ({ userId, examId, onDuplicate } = {}) => {
   const name = `exam-window:${String(userId)}:${String(examId)}`
   const instanceId = randomId()
+  const instanceStartedAt = Date.now()
 
   if (typeof navigator !== 'undefined' && navigator.locks?.request) {
     let releaseLock = null
     let settled = false
+    let requestFailed = false
     const acquired = await new Promise((resolve) => {
       const settle = (value) => {
         if (!settled) {
@@ -96,15 +99,20 @@ export const createExamWindowGuard = async ({ userId, examId, onDuplicate } = {}
         await new Promise((release) => {
           releaseLock = release
         })
-      }).catch(() => settle(true))
+      }).catch(() => {
+        requestFailed = true
+        settle(false)
+      })
     })
-    return {
-      acquired,
-      mode: 'web-locks',
-      close() {
-        if (releaseLock) {
-          releaseLock()
-          releaseLock = null
+    if (!requestFailed) {
+      return {
+        acquired,
+        mode: 'web-locks',
+        close() {
+          if (releaseLock) {
+            releaseLock()
+            releaseLock = null
+          }
         }
       }
     }
@@ -113,27 +121,64 @@ export const createExamWindowGuard = async ({ userId, examId, onDuplicate } = {}
   if (typeof BroadcastChannel !== 'undefined') {
     const channel = new BroadcastChannel(name)
     let closed = false
+    let acquired = false
+    let activeInstanceId = null
+    const contenders = new Map([[instanceId, instanceStartedAt]])
+    const precedes = (candidateId, candidateStartedAt) => {
+      const candidateTime = Number(candidateStartedAt) || 0
+      return candidateTime < instanceStartedAt
+        || (candidateTime === instanceStartedAt && String(candidateId) < instanceId)
+    }
     channel.onmessage = (event) => {
       const message = event?.data || {}
       if (!message.type || message.instanceId === instanceId) {
         return
       }
       if (message.type === 'WHO_IS_ACTIVE') {
-        channel.postMessage({ type: 'ACTIVE_EXAM_WINDOW', instanceId })
-      } else if (message.type === 'ACTIVE_EXAM_WINDOW' && !closed) {
-        onDuplicate?.()
+        if (acquired) {
+          channel.postMessage({
+            type: 'ACTIVE_EXAM_WINDOW',
+            instanceId,
+            startedAt: instanceStartedAt
+          })
+        } else {
+          contenders.set(message.instanceId, Number(message.startedAt) || 0)
+        }
+      } else if (message.type === 'ACTIVE_EXAM_WINDOW') {
+        if (!acquired) {
+          activeInstanceId = message.instanceId
+        } else if (precedes(message.instanceId, message.startedAt) && !closed) {
+          acquired = false
+          onDuplicate?.()
+        }
       }
     }
-    setTimeout(() => {
-      if (!closed) {
-        channel.postMessage({ type: 'WHO_IS_ACTIVE', instanceId })
+    channel.postMessage({
+      type: 'WHO_IS_ACTIVE',
+      instanceId,
+      startedAt: instanceStartedAt
+    })
+    await new Promise((resolve) => setTimeout(resolve, BROADCAST_ELECTION_MS))
+    if (activeInstanceId == null) {
+      const elected = [...contenders.entries()].sort((left, right) => {
+        const timeOrder = left[1] - right[1]
+        return timeOrder !== 0 ? timeOrder : String(left[0]).localeCompare(String(right[0]))
+      })[0]?.[0]
+      acquired = elected === instanceId
+      if (acquired && !closed) {
+        channel.postMessage({
+          type: 'ACTIVE_EXAM_WINDOW',
+          instanceId,
+          startedAt: instanceStartedAt
+        })
       }
-    }, 0)
+    }
     return {
-      acquired: true,
+      acquired,
       mode: 'broadcast-channel',
       close() {
         closed = true
+        acquired = false
         channel.close()
       }
     }

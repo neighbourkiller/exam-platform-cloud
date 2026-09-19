@@ -8,7 +8,7 @@ import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.SessionState;
 import com.ekusys.exam.runtime.repository.TimeoutTaskRepository.TaskRow;
 import com.ekusys.exam.runtime.service.SubmissionFinalPayloadService.EncodedFinalAnswers;
 import java.util.concurrent.ThreadLocalRandom;
-import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -64,7 +64,7 @@ public class ManualSubmissionService {
                     throw new IllegalStateException("主动交卷事务未返回结果");
                 }
                 return result;
-            } catch (CannotAcquireLockException exception) {
+            } catch (PessimisticLockingFailureException exception) {
                 if (attempt == MAX_LOCK_ATTEMPTS) {
                     throw exception;
                 }
@@ -80,7 +80,7 @@ public class ManualSubmissionService {
         }
     }
 
-    private void pauseBeforeRetry(int attempt, CannotAcquireLockException original) {
+    private void pauseBeforeRetry(int attempt, PessimisticLockingFailureException original) {
         long upperBound = MIN_RETRY_DELAY_MS * (1L << attempt);
         long delayMs = ThreadLocalRandom.current().nextLong(MIN_RETRY_DELAY_MS, upperBound + 1L);
         try {

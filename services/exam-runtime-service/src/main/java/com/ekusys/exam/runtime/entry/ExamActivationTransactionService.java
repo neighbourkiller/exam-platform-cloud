@@ -4,6 +4,7 @@ import com.ekusys.exam.exam.dto.ExamClientLeaseView;
 import com.ekusys.exam.runtime.messaging.RuntimeOutboxService;
 import com.ekusys.exam.runtime.service.ExamClientLeaseService;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -64,6 +65,15 @@ public class ExamActivationTransactionService {
         }
         if (!"PREPARED".equals(session.status())) {
             return new ActivationResult(session, now, false, session.status());
+        }
+        // 超时任务生命周期统一按 task -> session 顺序加锁，避免与终止、交卷事务形成环路。
+        List<Long> timeoutTaskIds = jdbc.queryForList(
+            "select id from submission_timeout_task where session_id=? for update",
+            Long.class,
+            session.id()
+        );
+        if (timeoutTaskIds.size() != 1) {
+            throw new IllegalStateException("预创建超时任务不存在或不唯一: sessionId=" + session.id());
         }
         LocalDateTime deadline = calculateDeadline(
             now, definition.durationMinutes(), definition.endTime()

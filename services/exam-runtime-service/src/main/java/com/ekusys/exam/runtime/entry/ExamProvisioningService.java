@@ -107,6 +107,15 @@ public class ExamProvisioningService {
                         """,
                     examId, eventId, eventVersion
                 );
+                // 与激活、超时领取和最终化保持 task -> session 的固定锁顺序。
+                jdbc.queryForList(
+                    "select id from submission_timeout_task where exam_id=? order by id for update",
+                    Long.class, examId
+                );
+                jdbc.queryForList(
+                    "select id from exam_session where exam_id=? order by id for update",
+                    Long.class, examId
+                );
                 jdbc.update(
                     """
                         insert ignore into submission_timeout_task(
@@ -119,14 +128,6 @@ public class ExamProvisioningService {
                          where s.exam_id=? and s.status='ANSWERING'
                         """,
                     examId
-                );
-                jdbc.queryForList(
-                    "select id from submission_timeout_task where exam_id=? order by id for update",
-                    Long.class, examId
-                );
-                jdbc.queryForList(
-                    "select id from exam_session where exam_id=? order by id for update",
-                    Long.class, examId
                 );
                 jdbc.update(
                     """

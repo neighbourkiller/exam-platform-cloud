@@ -313,14 +313,27 @@ public class ExamEntryService {
             throw leaseException(exception);
         }
         PaperSnapshotView paper = requireCachedPaper(definition);
+        LocalDateTime deliveryNow = dbNow();
         int firstDelivery = jdbc.update(
             """
                 update exam_session
                    set first_paper_delivered_at=?,update_time=current_timestamp(3)
-                 where id=? and status='ANSWERING' and first_paper_delivered_at is null
+                 where id=? and status='ANSWERING'
+                   and deadline_time>current_timestamp(3)
+                   and active_client_id=? and active_client_token=?
+                   and first_paper_delivered_at is null
                 """,
-            now, session.id()
+            deliveryNow, session.id(), request.clientId(), request.leaseToken()
         );
+        if (firstDelivery == 0) {
+            try {
+                leases.requireCurrent(
+                    session.id(), request.clientId(), request.leaseToken(), deliveryNow
+                );
+            } catch (BusinessException exception) {
+                throw leaseException(exception);
+            }
+        }
         SnapshotDraft draft = firstDelivery == 1
             ? SnapshotDraft.empty()
             : snapshots.loadLatestDraft(examId, studentId);
