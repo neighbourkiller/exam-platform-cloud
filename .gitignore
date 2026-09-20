@@ -81,6 +81,7 @@ Desktop.ini
 
 ### AI & Local Development Tooling ###
 
+AGENTS.md
 /CLAUDE.md
 /.claude/
 /.agents/
@@ -102,5 +103,5 @@ Desktop.ini
 
 /.tmp.driveupload/
 /.playwright-cli/
-/documents/_local/
+/documents/
 /deploy/load-test/results/
