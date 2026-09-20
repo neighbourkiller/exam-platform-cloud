@@ -78,7 +78,6 @@ exam/
 │   ├── scripts/
 │   ├── runbooks/
 │   └── load-test/
-├── documents/                         # 技术文档与测试验收记录
 └── legacy/monolith/                   # 旧单体归档，不参与 Maven 聚合构建
 ```
 

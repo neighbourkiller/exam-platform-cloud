@@ -78,7 +78,6 @@ exam/
 │   ├── scripts/
 │   ├── runbooks/
 │   └── load-test/
-├── documents/                         # Technical documentation and acceptance records
 └── legacy/monolith/                   # Archived monolith; excluded from the Maven reactor
 ```
 

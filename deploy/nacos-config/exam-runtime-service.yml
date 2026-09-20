@@ -36,7 +36,7 @@ management:
         exam.timeout.submission.completion.latency: 1s,2s,5s,10s,15s,20s,30s,45s,60s
 app:
   exam-entry:
-    enabled: ${APP_EXAM_ENTRY_V2_ENABLED:false}
+    enabled: ${APP_EXAM_ENTRY_V2_ENABLED:true}
     waiting-room-minutes: ${APP_EXAM_ENTRY_WAITING_ROOM_MINUTES:10}
     slot-count: ${APP_EXAM_ENTRY_SLOT_COUNT:10}
     ticket-retention-minutes: ${APP_EXAM_ENTRY_TICKET_RETENTION_MINUTES:10}
@@ -55,7 +55,7 @@ app:
         multiplier: ${APP_RUNTIME_LIFECYCLE_RETRY_MULTIPLIER:2.0}
         max-interval-ms: ${APP_RUNTIME_LIFECYCLE_RETRY_MAX_MS:10000}
   timeout-submission:
-    enabled: ${APP_TIMEOUT_SUBMISSION_V2_ENABLED:false}
+    enabled: ${APP_TIMEOUT_SUBMISSION_V2_ENABLED:true}
     batch-size: ${APP_TIMEOUT_SUBMISSION_BATCH_SIZE:8}
     worker-count: ${APP_TIMEOUT_SUBMISSION_WORKER_COUNT:8}
     lease-ms: ${APP_TIMEOUT_SUBMISSION_LEASE_MS:30000}
