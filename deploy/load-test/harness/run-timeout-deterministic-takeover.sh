@@ -8,9 +8,10 @@ set -Eeuo pipefail
 # 证据单独判断，不能把一次 SLA 失败误当成没有发生接管。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOAD_TEST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$LOAD_TEST_ROOT/../.." && pwd)"
 SUITE_SCRIPT="$SCRIPT_DIR/run-timeout-suite.sh"
-RESULT_ROOT="$SCRIPT_DIR/results"
+RESULT_ROOT="$LOAD_TEST_ROOT/results"
 umask 077
 
 USERS="${USERS:-200}"

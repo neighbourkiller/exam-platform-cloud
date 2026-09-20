@@ -14,7 +14,7 @@ if ($null -eq $wslCommand) {
     throw '未找到 wsl.exe，请先安装并初始化 WSL。'
 }
 
-$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $distributionArguments = if ([string]::IsNullOrWhiteSpace($Distribution)) {
     @()
 }
@@ -34,7 +34,7 @@ if ([string]::IsNullOrWhiteSpace($linuxProjectRoot)) {
 }
 
 & $wslCommand.Source @distributionArguments --exec bash -c `
-    'exec bash "$1/deploy/docker-deploy-example.sh"' bash $linuxProjectRoot
+    'exec bash "$1/deploy/scripts/docker-deploy-example.sh"' bash $linuxProjectRoot
 $deployExitCode = $LASTEXITCODE
 
 exit $deployExitCode

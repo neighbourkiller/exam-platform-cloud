@@ -21,7 +21,7 @@
 ## 证据与操作入口
 
 - [压测工具说明](../../../deploy/load-test/README.md)
-- [超时交卷运维手册](../../../deploy/TIMEOUT_SUBMISSION_OPERATIONS.md)
+- [超时交卷运维手册](../../../deploy/runbooks/TIMEOUT_SUBMISSION_OPERATIONS.md)
 - [超时交卷业务流程](../../技术文档/业务流程/超时交卷流程.md)
 
 各报告链接的原始结果继续留在 `deploy/load-test/results/`，该目录由 Git 忽略；缺少本地证据时只能阅读报告，不能宣称已复核原始结果。

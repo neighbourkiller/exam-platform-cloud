@@ -53,13 +53,17 @@ EkuExam Cloud 是一个基于微服务架构的云原生在线考试与成绩评
 exam/
 ├── platform/                          # 公共基础设施模块
 │   ├── exam-common-core/              # 核心工具类、基类、全局异常处理及公共配置
-│   └── exam-common-security/          # 共享的安全拦截与 JWT 认证校验模块
+│   ├── exam-common-security/          # 共享的安全拦截与 JWT 认证校验模块
+│   ├── exam-outbox-support/           # 事务 Outbox 基础能力
+│   ├── exam-audit-support/            # 公共操作审计能力
+│   └── exam-csv-import-support/       # 公共 CSV 导入能力
 ├── apis/                              # 微服务间 OpenFeign 调用接口定义与 DTO
 │   ├── exam-iam-api/
 │   ├── exam-academic-api/
 │   ├── exam-content-api/
 │   ├── exam-management-api/
-│   └── exam-runtime-api/
+│   ├── exam-runtime-api/
+│   └── exam-grading-api/
 ├── services/                          # 微服务应用
 │   ├── exam-gateway/                  # API 网关（路由转发、跨域处理、接口限流）- 端口: 16730
 │   ├── exam-iam-service/              # 统一身份认证与权限管理服务
@@ -69,7 +73,13 @@ exam/
 │   ├── exam-runtime-service/          # 考试运行时服务（开始考试、答题快照、提交答卷）
 │   ├── exam-grading-service/          # 阅卷判题服务（客观题自动判分、主观题人工批改）
 │   └── exam-reporting-service/        # 数据分析与统计报表服务
-└── src/main/resources/frontend/       # Vue 3 前端单页应用
+├── frontend/                          # Vue 3 前端单页应用
+├── deploy/                            # 配置、脚本、压测工具与运维手册
+│   ├── scripts/
+│   ├── runbooks/
+│   └── load-test/
+├── documents/                         # 技术文档与测试验收记录
+└── legacy/monolith/                   # 旧单体归档，不参与 Maven 聚合构建
 ```
 
 ---
@@ -107,7 +117,7 @@ docker compose \
 也可以运行只调用上述命令的示例脚本：
 
 ```bash
-bash deploy/docker-deploy-example.sh
+bash deploy/scripts/docker-deploy-example.sh
 ```
 
 在 Windows PowerShell 7 中，可通过 WSL 包装脚本调用同一个 Linux 部署入口：
@@ -177,7 +187,7 @@ docker compose -p exam-platform-cloud -f docker-compose.yml \
 ### 4. 启动前端
 
 ```bash
-cd src/main/resources/frontend
+cd frontend
 npm install
 npm run dev
 ```

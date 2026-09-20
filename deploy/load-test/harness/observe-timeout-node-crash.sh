@@ -8,13 +8,14 @@ set -Eeuo pipefail
 # 到上限未收敛必须非零退出。仅操作 exam-platform-cloud-timeout 隔离项目。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOAD_TEST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$LOAD_TEST_ROOT/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env.microservices}"
 COMPOSE_PROJECT="exam-platform-cloud-timeout"
 source "$SCRIPT_DIR/process-lifecycle.sh"
 umask 077
 COMPOSE_BASE=(docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT"
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml")
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml")
 
 SCENARIO="${SCENARIO:-FAULT-OBSERVE-4-3}"
 KILL_TIMING="${KILL_TIMING:-with_inflight}"   # before_deadline | with_inflight | after_renewal
@@ -35,7 +36,7 @@ case "$KILL_TIMING" in
     ;;
 esac
 
-RESULT_DIR="$SCRIPT_DIR/results/$(date +%Y%m%d_%H%M%S)-$SCENARIO"
+RESULT_DIR="$LOAD_TEST_ROOT/results/$(date +%Y%m%d_%H%M%S)-$SCENARIO"
 mkdir -p "$RESULT_DIR"
 exec > >(tee "$RESULT_DIR/run.log") 2>&1
 RUN_STARTED_AT="$(date --iso-8601=seconds)"

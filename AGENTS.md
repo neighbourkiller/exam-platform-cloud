@@ -26,9 +26,10 @@ EkuExam Cloud 是面向管理员、教师和学生的在线考试平台。当前
 - `services/`：各业务微服务，新后端功能的默认落点；进入后继续遵守 [`services/AGENTS.md`](services/AGENTS.md)。
 - `apis/`：跨服务 DTO 和 Feign 契约，不放业务实现；契约规则见 [`apis/AGENTS.md`](apis/AGENTS.md)。
 - `platform/`：跨服务复用的基础能力，不放服务专属业务。
-- `src/main/resources/frontend/`：当前 Vue 前端，不属于旧单体；前端规则见 [`src/main/resources/frontend/AGENTS.md`](src/main/resources/frontend/AGENTS.md)。
-- `deploy/`：本地部署、Nacos 发布和运维文档；部署规则见 [`deploy/AGENTS.md`](deploy/AGENTS.md)。
-- `src/main/java/`、`src/main/resources/db/`：旧单体遗留，不是新功能和新迁移的默认落点。
+- `frontend/`：当前 Vue 前端；前端规则见 [`frontend/AGENTS.md`](frontend/AGENTS.md)。
+- `deploy/`：本地部署、Nacos 发布、压测工具和运维手册；部署规则见 [`deploy/AGENTS.md`](deploy/AGENTS.md)。
+- `documents/`：公共技术文档、测试验收和面试材料；本地材料只放在 Git 忽略的 `documents/_local/`。
+- `legacy/monolith/`：旧单体归档，不参与根聚合构建，不是新功能和新迁移的落点。
 
 ### 服务职责
 
@@ -43,7 +44,7 @@ EkuExam Cloud 是面向管理员、教师和学生的在线考试平台。当前
 
 ## 必须遵守的系统边界
 
-- 新后端功能进入对应的 `services/exam-*-service`，不要默认修改根目录旧单体实现。
+- 新后端功能进入对应的 `services/exam-*-service`，不要修改 `legacy/monolith/` 中的旧单体归档。
 - 跨服务调用先在 `apis/` 定义稳定契约，再通过 Feign Client 或事件协作；禁止直接访问其他服务数据库。
 - 每个服务只维护自己的 Schema、Flyway 迁移和 Outbox 表。跨服务一致性依赖事件和幂等消费，不依赖分布式事务。
 - `platform/` 只承载已明确需要跨服务复用的基础能力，业务专属代码不得为了复用而过早下沉。
@@ -51,7 +52,7 @@ EkuExam Cloud 是面向管理员、教师和学生的在线考试平台。当前
 - 业务数据和 `outbox_event` 应在同一事务写入；消费者使用 `inbox_event` 或等价约束去重。可靠性语义是“至少一次投递 + 幂等消费”，不得声称绝对不重复或绝对不丢失。
 - 变更公共事件、共享队列、死信交换机、重试参数或 Outbox 状态机时，必须定位全部生产者、消费者和拓扑声明方，并评估兼容性与发布顺序。
 - `docker-compose.yml` 是唯一 Compose 入口，负责中间件、初始化配置、初始数据与微服务容器编排；禁止新增第二个 Compose 部署入口。
-- 涉及 Outbox 上线、重放或清理时，先阅读 [`deploy/OUTBOX_OPERATIONS.md`](deploy/OUTBOX_OPERATIONS.md)；涉及快照积压或失败时，先阅读 [`deploy/SNAPSHOT_FLUSH_OPERATIONS.md`](deploy/SNAPSHOT_FLUSH_OPERATIONS.md)。
+- 涉及 Outbox 上线、重放或清理时，先阅读 [`deploy/runbooks/OUTBOX_OPERATIONS.md`](deploy/runbooks/OUTBOX_OPERATIONS.md)；涉及快照积压或失败时，先阅读 [`deploy/runbooks/SNAPSHOT_FLUSH_OPERATIONS.md`](deploy/runbooks/SNAPSHOT_FLUSH_OPERATIONS.md)。
 
 ## 构建与验证
 
@@ -68,7 +69,7 @@ EkuExam Cloud 是面向管理员、教师和学生的在线考试平台。当前
 ./mvnw -B clean package -DskipTests
 ```
 
-前端验证遵循 [`src/main/resources/frontend/AGENTS.md`](src/main/resources/frontend/AGENTS.md)。纯文档修改检查内容、链接和差异即可，无需运行构建或业务测试。
+前端验证遵循 [`frontend/AGENTS.md`](frontend/AGENTS.md)。纯文档修改检查内容、链接和差异即可，无需运行构建或业务测试。
 
 - Runtime 与 Outbox 相关模块包含 Testcontainers 测试；运行前确认 Docker 可用，并区分基础设施不可用与业务回归。
 - 以命令退出码和测试汇总判断结果，不把普通 Spring Boot、Mockito 或 Surefire 警告误报为失败。

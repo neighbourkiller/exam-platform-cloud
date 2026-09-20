@@ -89,6 +89,6 @@ GROUP BY job_id;
 
 重判 MySQL 场景 12 项、原主观题租约 MySQL 场景 6 项、题库纠错 MySQL 场景 3 项、成绩投影 MySQL 场景 5 项均通过；同时验证了答案格式、Runtime 交卷分页和浏览器考试编号精度。
 
-在 `src/main/resources/frontend` 执行 `npm run test`（16 项通过）及 `npm run build`（通过，有现有大体积 chunk 提示）；仓库根执行 `git diff --check` 通过。新增文件另检查了尾随空白。
+在 `frontend` 执行 `npm run test`（16 项通过）及 `npm run build`（通过，有现有大体积 chunk 提示）；仓库根执行 `git diff --check` 通过。新增文件另检查了尾随空白。
 
 本次使用独立 Testcontainers MySQL，未对运行中的服务执行迁移或部署；尚未执行真实登录浏览器、Nacos、RabbitMQ 到报表页面的整链路验收，必须按上面的部署冒烟场景补验。

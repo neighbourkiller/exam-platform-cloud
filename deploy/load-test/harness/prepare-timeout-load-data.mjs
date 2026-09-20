@@ -13,7 +13,7 @@ const envFile = process.env.ENV_FILE || path.join(projectRoot, '.env.microservic
 const composeProject = process.env.COMPOSE_PROJECT_NAME || 'exam-platform-cloud-timeout'
 const composeOverrideFile = process.env.COMPOSE_OVERRIDE_FILE
   ? path.resolve(process.env.COMPOSE_OVERRIDE_FILE)
-  : path.join(scriptDirectory, 'compose.timeout-test.yaml')
+  : path.join(scriptDirectory, '..', 'compose', 'compose.timeout-test.yaml')
 const composeArguments = [
   'compose', '-p', composeProject,
   '-f', path.join(projectRoot, 'docker-compose.yml'),

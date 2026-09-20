@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import {
   evaluateTimeoutGates,
   parseDatabaseSummary
@@ -16,7 +17,7 @@ import { extractDiagnostics } from './extract-timeout-diagnostics.mjs'
 import { analyzeDiagnostics } from './analyze-timeout-diagnostics.mjs'
 import { verifyTakeover } from './verify-timeout-takeover.mjs'
 
-const fixtureDir = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures')
+const fixtureDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures')
 
 function readFixture(name) {
   return JSON.parse(fs.readFileSync(path.join(fixtureDir, name), 'utf8'))

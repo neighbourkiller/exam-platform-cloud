@@ -1,7 +1,10 @@
 FROM maven:3.9-eclipse-temurin-21 AS builder
 
 WORKDIR /workspace
-COPY . .
+COPY pom.xml ./
+COPY platform/ platform/
+COPY apis/ apis/
+COPY services/ services/
 RUN mvn -B -DskipTests package
 
 FROM eclipse-temurin:21-jre

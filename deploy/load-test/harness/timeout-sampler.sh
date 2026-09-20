@@ -4,10 +4,11 @@ set -Eeuo pipefail
 # 固定实例集合的隔离采样器。每一条指标记录都带时间、实例、容器和
 # 采样请求起止时间；多行 Prometheus 响应不会共享一个空时间戳。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOAD_TEST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$LOAD_TEST_ROOT/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env.microservices}"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:-exam-platform-cloud-timeout}"
-COMPOSE_FILES=(-f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml")
+COMPOSE_FILES=(-f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml")
 MODE="${1:?mode is required: resource|registry|prometheus}"
 OUTPUT_FILE="${2:?output file is required}"
 STATE_FILE="${3:?state file is required}"

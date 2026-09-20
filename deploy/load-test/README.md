@@ -10,7 +10,10 @@
   `submission_draft_payload` 保存相同答案的 `GZIP_JSON_V1` 主草稿；
 - XXL-JOB 使用 2 秒 CRON 和广播路由。
 
-仓库提供的 `compose.timeout-test.yaml` 只作为 `docker-compose.yml` 的压测覆盖文件使用，
+目录按职责组织：`scenarios/` 保存 k6 场景，`harness/` 保存执行与分析工具，
+`compose/` 保存隔离环境覆盖文件，`fixtures/` 保存工具测试夹具，`results/` 保存本地结果。
+
+仓库提供的 `compose/compose.timeout-test.yaml` 只作为 `docker-compose.yml` 的压测覆盖文件使用，
 默认项目名为 `exam-platform-cloud-timeout`，并使用独立的 MySQL、Redis、RabbitMQ、MinIO、
 JWT 数据卷和 Docker 网络。不要省略该覆盖文件，也不要把压测数据写入主环境命名卷。
 执行套件会先用 JDK 21 在宿主机打包当前 Runtime，再通过压测专用 Dockerfile 复制该 JAR；
@@ -25,7 +28,7 @@ $env:EXAM_ID='10001'
 $env:DEADLINE_EPOCH_MS='1786200000000'
 $env:TOKENS_FILE='D:\secure\timeout-test-tokens.json'
 $env:USERS='10000'
-k6 run deploy/load-test/timeout-submission.js
+k6 run deploy/load-test/scenarios/timeout-submission.js
 ```
 
 脚本默认阈值要求 P99 小于 30 秒、最大值小于 60 秒、所有会话均完成；经业务方确认采用
@@ -51,7 +54,7 @@ MySQL。不得删除这个首次等待来获取更好的“客户端观察延迟
 
 ## 确定性接管机制测试
 
-`run-timeout-deterministic-takeover.sh` 按固定顺序执行四轮 200 会话机制测试：
+`harness/run-timeout-deterministic-takeover.sh` 按固定顺序执行四轮 200 会话机制测试：
 领取后杀两轮（`CLAIM_HELD`），随后续租后杀两轮（`RENEW_SUCCEEDED`）。每轮使用
 唯一考试 ID、隔离观察附加 JAR 和真实 Runtime 容器；只有首轮构建当前候选镜像，后续
 轮次复用同一镜像。脚本会在每轮封存目标任务的初始/恢复领取、令牌指纹、租约、kill、
@@ -61,7 +64,7 @@ MySQL。不得删除这个首次等待来获取更好的“客户端观察延迟
 JAVA_HOME=/path/to/jdk-21 \
 PATH=/path/to/jdk-21/bin:$PATH \
 DB_P99_GATE_SECONDS=45 DB_MAX_GATE_SECONDS=60 \
-bash deploy/load-test/run-timeout-deterministic-takeover.sh
+bash deploy/load-test/harness/run-timeout-deterministic-takeover.sh
 ```
 
 机制轮的 SLA 结果仍原样写入各轮 `gate-result.json`，但人工阻塞轮不能替代自然负载
@@ -75,7 +78,7 @@ bash deploy/load-test/run-timeout-deterministic-takeover.sh
 
 ## 10,000 人考试入场压测
 
-`exam-entry-10000.js` 按每秒 1,000 次、持续 10 秒发送 10,000 个唯一学生的候场请求，
+`scenarios/exam-entry-10000.js` 按每秒 1,000 次、持续 10 秒发送 10,000 个唯一学生的候场请求，
 等待服务端稳定槽位后执行激活与试卷交付。测试环境应部署 4 个 Runtime 实例、开启
 `APP_EXAM_ENTRY_V2_ENABLED=true`，并提前发布考试等待 Runtime 投影进入 `READY`。
 
@@ -86,7 +89,7 @@ $env:TOKENS_FILE='D:\secure\entry-test-tokens.json'
 $env:USERS='10000'
 $env:RATE='1000'
 $env:DURATION='10s'
-k6 run deploy/load-test/exam-entry-10000.js
+k6 run deploy/load-test/scenarios/exam-entry-10000.js
 ```
 
 冷缓存场景应先清理该场考试的 Runtime L1/L2 试卷缓存；Redis 故障和 Content 故障场景

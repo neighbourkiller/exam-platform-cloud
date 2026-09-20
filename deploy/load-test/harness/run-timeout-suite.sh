@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOAD_TEST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$LOAD_TEST_ROOT/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env.microservices}"
 COMPOSE_PROJECT="exam-platform-cloud-timeout"
 source "$SCRIPT_DIR/process-lifecycle.sh"
@@ -60,10 +61,10 @@ if ! [[ "$DB_P99_GATE_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] \
 fi
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-RESULT_DIR="$SCRIPT_DIR/results/${TIMESTAMP}-${SCENARIO}"
+RESULT_DIR="$LOAD_TEST_ROOT/results/${TIMESTAMP}-${SCENARIO}"
 mkdir -p "$RESULT_DIR"
 TOKEN_FILE="$(mktemp "$RESULT_DIR/.timeout-tokens.XXXXXX")"
-RUNTIME_IMAGE_CONTEXT_DIR="$SCRIPT_DIR/.runtime-image"
+RUNTIME_IMAGE_CONTEXT_DIR="$LOAD_TEST_ROOT/.runtime-image"
 export TIMEOUT_TEST_RESULT_DIR="$RESULT_DIR"
 
 case "$OBSERVATION_MODE" in
@@ -72,7 +73,7 @@ case "$OBSERVATION_MODE" in
 esac
 if [ "$OBSERVATION_MODE" != "off" ] || [ "$TIMEOUT_DIAGNOSTIC" = "true" ]; then
   OBSERVATION_ENABLED=true
-  OBSERVATION_COMPOSE_FILE_ARGS=(-f "$SCRIPT_DIR/compose.timeout-observation.yaml")
+  OBSERVATION_COMPOSE_FILE_ARGS=(-f "$LOAD_TEST_ROOT/compose/compose.timeout-observation.yaml")
 else
   OBSERVATION_ENABLED=false
   OBSERVATION_COMPOSE_FILE_ARGS=()
@@ -154,7 +155,7 @@ cleanup() {
 
   if [ "$FAULT_INJECTION" = "node_crash" ]; then
     if ! docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-      -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+      -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
       "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
       up -d --scale runtime-service="$REPLICAS" runtime-service >/dev/null 2>&1; then
       CLEANUP_ERROR=1
@@ -232,7 +233,7 @@ if [ "$BUILD_RUNTIME_IMAGE" = "true" ]; then
 
   echo "[$(date +'%T')] 构建当前工作区 Runtime 镜像..."
   docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-    -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+    -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
     "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
     build --progress plain runtime-service | tee "$RESULT_DIR/runtime-image-build.log"
   rm -f "$RUNTIME_IMAGE_CONTEXT_DIR/app.jar"
@@ -250,12 +251,12 @@ if [ "$OBSERVATION_ENABLED" = true ]; then
   # 观察初始化器要求控制清单在 Runtime 启动前已经存在；先启动依赖和
   # IAM 以便准备数据脚本读取 Compose 管理的测试密钥。
   docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-    -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+    -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
     "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
     up -d mysql redis rabbitmq minio nacos nacos-config-init jwt-key-init xxl-job-admin iam-service
 else
   docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-    -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+    -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
     up -d --scale runtime-service="$REPLICAS" \
     mysql redis rabbitmq minio nacos nacos-config-init jwt-key-init xxl-job-admin iam-service gateway runtime-service
 fi
@@ -268,7 +269,7 @@ if [ -n "$(git -C "$PROJECT_ROOT" status --porcelain)" ]; then
 fi
 CODE_DIFF_ID="$( (git -C "$PROJECT_ROOT" rev-parse HEAD; git -C "$PROJECT_ROOT" diff; git -C "$PROJECT_ROOT" status --porcelain) 2>/dev/null | sha256sum | cut -c1-16 )"
 RUNTIME_IMAGE_ID=$(docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
   "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
   images -q runtime-service | head -n 1)
 RUNTIME_IMAGE_DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$RUNTIME_IMAGE_ID" 2>/dev/null || true)"
@@ -308,7 +309,7 @@ cat << METADATA > "$RESULT_DIR/metadata.json"
 METADATA
 
 docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
   "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
   images > "$RESULT_DIR/image-digests.txt"
 echo "k6_image=$K6_IMAGE" >> "$RESULT_DIR/image-digests.txt"
@@ -316,23 +317,23 @@ echo "k6_image=$K6_IMAGE" >> "$RESULT_DIR/image-digests.txt"
 # 3. 清理 Redis 缓存与重置 MySQL 状态
 echo "[$(date +'%T')] 清理 Redis 缓存并重置 MySQL 状态计数器..."
 docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
   "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
   exec -T redis redis-cli -n 1 flushdb >/dev/null
 
 MYSQL_EXEC=(docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT"
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml"
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml"
   "${OBSERVATION_COMPOSE_FILE_ARGS[@]}"
   exec -T mysql sh -c 'mysql -uexam_runtime -p"$EXAM_DB_PASSWORD" exam_runtime'
 )
 MYSQL_EXEC_RAW=(docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT"
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml"
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml"
   "${OBSERVATION_COMPOSE_FILE_ARGS[@]}"
   exec -T mysql sh -c 'mysql -uexam_runtime -p"$EXAM_DB_PASSWORD" -N exam_runtime'
 )
 
 docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
   "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
   exec -T mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH STATUS; TRUNCATE TABLE performance_schema.events_statements_summary_by_digest;"' \
   >/dev/null 2>&1 || true
@@ -421,7 +422,7 @@ CONTROL
   chmod 600 "$RESULT_DIR/observation/control.properties"
   echo "[$(date +'%T')] 控制清单已写入，目标 task=$TARGET_TASK_ID；现在启动带隔离组件的 Runtime"
   docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-    -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+    -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
     "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
     up -d --scale runtime-service="$REPLICAS" gateway runtime-service
 fi
@@ -431,7 +432,7 @@ TARGET_CONTAINER_ID=""
 TARGET_CONTAINER_NAME=""
 if [ "$FAULT_INJECTION" = "node_crash" ]; then
   mapfile -t runtime_container_ids < <(docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-    -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+    -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
     "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
     ps -q runtime-service)
   if [ "${#runtime_container_ids[@]}" -lt 2 ]; then
@@ -471,7 +472,7 @@ REGISTRY_TIMELINE="$RESULT_DIR/registry-timeline.tsv"
 PROM_METRICS_FILE="$RESULT_DIR/runtime-prometheus-samples.log"
 EXPECTED_INSTANCES_FILE="$SAMPLER_STATE_DIR/expected-instances.tsv"
 docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
   "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" \
   ps -q runtime-service | while read -r container_id; do
     [ -n "$container_id" ] || continue
@@ -549,7 +550,7 @@ if [ "$ENABLE_POLLING" = "true" ]; then
 
   K6_CMD=(docker run --name "$K6_CONTAINER_NAME" --cidfile "$K6_CID_FILE" \
     --user "$(id -u):$(id -g)" --network host --ulimit nofile=1048576:1048576
-    -v "$SCRIPT_DIR:/load-test"
+    -v "$LOAD_TEST_ROOT:/load-test"
     -v "$RESULT_DIR:/results"
     -v "$TOKEN_FILE:/run/secrets/timeout-tokens.json:ro"
     -e BASE_URL="http://localhost:16730/api/v1"
@@ -566,7 +567,7 @@ if [ "$ENABLE_POLLING" = "true" ]; then
     "$K6_IMAGE" run \
       "${K6_DIAGNOSTIC_ARGS[@]}" \
       --summary-trend-stats="avg,min,med,max,p(90),p(95),p(99)" \
-      --summary-export="/results/k6-summary.json" /load-test/timeout-submission.js
+      --summary-export="/results/k6-summary.json" /load-test/scenarios/timeout-submission.js
   )
 
   start_process_group K6_PID "$RESULT_DIR/k6-stdout.log" "$RESULT_DIR/k6-stderr.log" "${K6_CMD[@]}"
@@ -636,7 +637,7 @@ NODE
         return 0
       fi
     done < <(docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-      -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+      -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
       "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" ps -q runtime-service)
     return 1
   }
@@ -739,7 +740,7 @@ process.stdin.on("end", () => {
     FAULT_INFLIGHT_IDS="$TARGET_TASK_ID"
     FAULT_INFLIGHT_COUNT=1
     DB_INJECTION_TIME="$(echo 'select current_timestamp(3);' | "${MYSQL_EXEC_RAW[@]}")"
-    REGISTRY_COUNT_AT_KILL="$(echo 'select count(*) from xxl_job_registry where registry_key=0x6578616d2d72756e74696d652d6578656375746f72;' | docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" exec -T mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N xxl_job' | tr -d '[:space:]')"
+    REGISTRY_COUNT_AT_KILL="$(echo 'select count(*) from xxl_job_registry where registry_key=0x6578616d2d72756e74696d652d6578656375746f72;' | docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" "${OBSERVATION_COMPOSE_FILE_ARGS[@]}" exec -T mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N xxl_job' | tr -d '[:space:]')"
     {
       echo "database_injection_time=$DB_INJECTION_TIME"
       echo "observation_instance_id=$OBSERVATION_INSTANCE_ID"
@@ -1109,7 +1110,7 @@ SHOW STATUS WHERE Variable_name IN (
 "
 echo "$RESOURCE_SQL" | "${MYSQL_EXEC[@]}" > "$RESULT_DIR/resource-summary.txt"
 docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
   exec -T mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -e "
     SELECT COUNT_STAR,
            ROUND(SUM_TIMER_WAIT/1000000000000,3) total_s,
@@ -1122,11 +1123,11 @@ docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
   "' > "$RESULT_DIR/mysql-top-statements.tsv" 2>/dev/null || true
 echo "--- Redis DB 1 Key Count ---" >> "$RESULT_DIR/resource-summary.txt"
 docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
   exec -T redis redis-cli -n 1 dbsize >> "$RESULT_DIR/resource-summary.txt"
 
 docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml" \
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" \
   logs --no-color --since "$RUN_STARTED_AT" runtime-service 2>&1 \
   | grep -E 'Timeout submission initialized|Timeout submission round finished|Timeout submission retry scheduled|超时交卷批次超过任务总预算|projection|post-commit|reconciliation' \
   > "$RESULT_DIR/runtime-events.log" || true

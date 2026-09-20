@@ -5,7 +5,8 @@ set -Eeuo pipefail
 # 由 observe-timeout-node-crash.sh 在停止后 wait，避免跨轮残留查询。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOAD_TEST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$LOAD_TEST_ROOT/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env.microservices}"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:-exam-platform-cloud-timeout}"
 MODE="${1:?mode is required: stats|registry}"
@@ -24,7 +25,7 @@ umask 077
 compose() {
   docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \
     -f "$PROJECT_ROOT/docker-compose.yml" \
-    -f "$SCRIPT_DIR/compose.timeout-test.yaml" "$@"
+    -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml" "$@"
 }
 
 sql_run() {

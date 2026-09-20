@@ -9,6 +9,7 @@
 | 了解架构与组件职责 | [架构与组件选型](技术文档/架构与组件选型.md) | 保留原文 2026-08-20 分析基线，具体版本以代码为准 |
 | 理解发布、候场、激活与试卷交付 | [进入考试流程](技术文档/业务流程/进入考试流程.md) | 原文核对日期 2026-09-19 |
 | 理解截止接管与最终交卷 | [超时交卷流程](技术文档/业务流程/超时交卷流程.md) | 原文同步日期 2026-09-19 |
+| 理解主观题阅卷租约 | [主观题阅卷认领](技术文档/业务流程/主观题阅卷认领.md) | 认领、续期、释放和评分并发边界 |
 | 对比其他考试系统的快照机制 | [答题快照机制调研](技术文档/调研/开源考试系统答题快照机制对比调研.md) | 调研日期 2026-09-06，外部仓库状态可能变化 |
 | 阅读测试手册、验收证据与勘误 | [超时交卷 V2 验收导航](测试与验收/超时交卷V2/README.md) | 各轮环境、门槛与证据独立，不合并推导生产放行结论 |
 | 准备 Java 后端项目面试 | [面试准备导航](面试准备/README.md) | 区分整理稿、表达示例与原始对话 |
@@ -16,7 +17,7 @@
 ## 与部署目录的边界
 
 - 本目录维护业务原理、流程、调研和验收叙述。
-- 部署操作继续维护在 `deploy/`，参见 [超时交卷运维](../deploy/TIMEOUT_SUBMISSION_OPERATIONS.md)、[Outbox 运维](../deploy/OUTBOX_OPERATIONS.md)和[快照刷盘运维](../deploy/SNAPSHOT_FLUSH_OPERATIONS.md)。
+- 部署操作继续维护在 `deploy/runbooks/`，参见 [超时交卷运维](../deploy/runbooks/TIMEOUT_SUBMISSION_OPERATIONS.md)、[Outbox 运维](../deploy/runbooks/OUTBOX_OPERATIONS.md)和[快照刷盘运维](../deploy/runbooks/SNAPSHOT_FLUSH_OPERATIONS.md)。
 - 压测脚本、执行方式与原始证据继续由 [deploy/load-test](../deploy/load-test/README.md) 管理，不在本目录复制。报告中的 `deploy/load-test/results/` 证据属于本地忽略内容，新的克隆不一定具备。
 
 ## 维护约定

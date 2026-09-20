@@ -25,7 +25,7 @@ EkuExam Cloud is a cloud-native, microservice-based online exam and grading plat
 - **Exam Lifecycle** - Create, schedule, publish, start, submit, and terminate exams with target class control.
 - **Real-time Answer Snapshots** - Saves student progress every 30 seconds to Redis, persisting to MySQL on submission or session expiry.
 - **Anti-cheating Proctoring** - Tab-switch detection, automated webcam screenshot evidence uploads, activity logging, and teacher-side disposition tools.
-- **Grading Engine** - Automated grading for objective questions; subjective answers are routed to a manual grading queue with batch-scoring support. Finished exams support versioned answer corrections, resumable regrading, and historical answer restoration; see [regrading operations](deploy/REGRADE_OPERATIONS.md).
+- **Grading Engine** - Automated grading for objective questions; subjective answers are routed to a manual grading queue with batch-scoring support. Finished exams support versioned answer corrections, resumable regrading, and historical answer restoration; see [regrading operations](deploy/runbooks/REGRADE_OPERATIONS.md).
 - **Analytics Dashboard** - Score distribution, class performance trends, wrong-answer ratios, and per-student score breakdowns visualized with ECharts.
 - **Admin Management** - Bulk import of users/classes/courses via CSV/Excel, role mapping, and detailed operation audit logging.
 
@@ -53,13 +53,17 @@ The project has been refactored into a Maven multi-module microservice architect
 exam/
 ├── platform/                          # Common Infrastructure Modules
 │   ├── exam-common-core/              # Common utilities, base entities, exceptions, and global configurations
-│   └── exam-common-security/          # Shared Spring Security and JWT authentication mechanisms
+│   ├── exam-common-security/          # Shared Spring Security and JWT authentication mechanisms
+│   ├── exam-outbox-support/           # Transactional Outbox infrastructure
+│   ├── exam-audit-support/            # Shared operation auditing
+│   └── exam-csv-import-support/       # Shared CSV import support
 ├── apis/                              # Service Feign Client APIs and Shared DTOs
 │   ├── exam-iam-api/
 │   ├── exam-academic-api/
 │   ├── exam-content-api/
 │   ├── exam-management-api/
-│   └── exam-runtime-api/
+│   ├── exam-runtime-api/
+│   └── exam-grading-api/
 ├── services/                          # Microservice Applications
 │   ├── exam-gateway/                  # API Gateway (Route routing, CORS, rate limiting) - Ports: 16730
 │   ├── exam-iam-service/              # Identity and Access Management (Auth & Users)
@@ -69,7 +73,13 @@ exam/
 │   ├── exam-runtime-service/          # Exam taking, snapshots, anti-cheat, and submission
 │   ├── exam-grading-service/          # Objective auto-grading and manual grading queue
 │   └── exam-reporting-service/        # Statistical dashboards and reporting
-└── src/main/resources/frontend/       # Vue 3 Frontend Single Page Application
+├── frontend/                          # Vue 3 Frontend Single Page Application
+├── deploy/                            # Configuration, scripts, load tests, and runbooks
+│   ├── scripts/
+│   ├── runbooks/
+│   └── load-test/
+├── documents/                         # Technical documentation and acceptance records
+└── legacy/monolith/                   # Archived monolith; excluded from the Maven reactor
 ```
 
 ---
@@ -96,7 +106,7 @@ docker compose -p exam-platform-cloud -f docker-compose.yml \
   --env-file .env.microservices up -d --build
 ```
 
-The example wrapper `bash deploy/docker-deploy-example.sh` only invokes this Compose file.
+The example wrapper `bash deploy/scripts/docker-deploy-example.sh` only invokes this Compose file.
 On Windows with PowerShell 7, invoke the same Linux deployment entry point through WSL:
 
 ```powershell
@@ -153,7 +163,7 @@ If you wish to run/debug specific services locally instead of in Docker:
 ### 4. Run the Frontend
 
 ```bash
-cd src/main/resources/frontend
+cd frontend
 npm install
 npm run dev
 ```

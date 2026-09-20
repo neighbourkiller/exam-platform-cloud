@@ -105,7 +105,7 @@ public class SnapshotFlushScheduler {
      * 本任务负责定期清理这些已隔离的条目，释放 Redis 空间。</p>
      *
      * <p>被清理的快照数据已无法自动恢复，需要通过运维手段
-     * （参见 deploy/SNAPSHOT_FLUSH_OPERATIONS.md）进行人工排查和重放。</p>
+     * （参见 deploy/runbooks/SNAPSHOT_FLUSH_OPERATIONS.md）进行人工排查和重放。</p>
      *
      * <p>配置项：{@code app.snapshot.flush-cleanup-interval-ms}，默认 3600000 毫秒（1 小时）。
      * 首次执行延迟同样为 1 小时。</p>

@@ -1,80 +1,106 @@
-### Java / Maven ###
+### Build Outputs ###
+
+# Java / Maven
 target/
 !**/src/main/**/target/
 !**/src/test/**/target/
+
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
 *.class
 *.jar
 *.war
 *.ear
+/out/
+
+# Frontend
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+/frontend/coverage/
+
+
+### Logs & Crash Dumps ###
+
 *.log
 hs_err_pid*
 replay_pid*
 
-### Spring Boot ###
-.mvn/wrapper/maven-wrapper.jar
 
-### STS (Spring Tool Suite) ###
+### Maven Wrapper ###
+
+/.mvn/wrapper/maven-wrapper.jar
+
+
+### Environment & Secrets ###
+
+/.env
+/.env.local
+/.env.*.local
+/.env.microservices
+
+/deploy/secrets/
+/deploy/load-test/tokens*.json
+
+
+### IDE Metadata ###
+
+# IntelliJ IDEA
+/.idea/
+*.iws
+*.iml
+*.ipr
+
+# Eclipse / STS
 .apt_generated
 .classpath
 .factorypath
 .project
-.settings
+.settings/
 .springBeans
 .sts4-cache
 
-### IntelliJ IDEA ###
-.idea/
-*.iws
-*.iml
-*.ipr
-out/
-
-### NetBeans ###
+# NetBeans
 /nbproject/private/
 /nbbuild/
-/dist/
 /nbdist/
 /.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
-students_import_test.csv
 
-### VS Code ###
-.vscode/
+# VS Code
+/.vscode/
 
-### Frontend (Vite / Vue) ###
-src/main/resources/frontend/node_modules/
-src/main/resources/frontend/dist/
-src/main/resources/frontend/.vite/
-src/main/resources/frontend/*.log
 
-### Environment & Secrets ###
-.env
-.env.local
-.env.*.local
-.env.microservices
-deploy/secrets/
-deploy/load-test/tokens*.json
+### Operating System Files ###
 
-### AI / Agent Tooling ###
-CLAUDE.md
-.claude/
-.agents/
-.codex/
-.codex_tmp/
-.omx/
-.chrome-tmp*/
-skills-lock.json
+.DS_Store
+Thumbs.db
+Desktop.ini
 
-### GitHub Actions (not used yet) ###
-.github/
 
-### Personal / Non-project Files ###
-projects/
-.tmp.driveupload/
-.playwright-cli/
+### AI & Local Development Tooling ###
 
-scratch/
-deploy/load-test/results
+/CLAUDE.md
+/.claude/
+/.agents/
+/.codex/
+/.codex_tmp/
+/.local/
+/.omx/
+/.chrome-tmp*/
+/skills-lock.json
+
+
+### GitHub Local Tooling ###
+
+/.github/java-upgrade/
+/.github/modernize/
+
+
+### Local & Generated Project Data ###
+
+/.tmp.driveupload/
+/.playwright-cli/
 /documents/_local/
+/deploy/load-test/results/

@@ -206,8 +206,8 @@ LIMIT 200;
 
 ## 容量验收
 
-使用 [`deploy/load-test/timeout-submission.js`](load-test/timeout-submission.js) 和
-[`deploy/load-test/README.md`](load-test/README.md) 依次执行两实例、四实例、10,000 会话同一
+使用 [`deploy/load-test/scenarios/timeout-submission.js`](../load-test/scenarios/timeout-submission.js) 和
+[`deploy/load-test/README.md`](../load-test/README.md) 依次执行两实例、四实例、10,000 会话同一
 `due_at` 的验收。k6 结果是客户端观察值；最终 SLA 还要按数据库
 `due_at -> completed_at` 复核：
 
@@ -218,7 +218,7 @@ LIMIT 200;
 MySQL/Testcontainers 的锁等待、截止围栏、主动与超时交卷、自愈和最终结果保护场景。
 前端 Vitest 19/19、交卷流程 8/8、入场流程 4/4，生产构建均通过。
 
-`deploy/docker-deploy-example.sh` 的 Compose 配置检查通过，但两次 `up -d --build` 均在拉取
+`deploy/scripts/docker-deploy-example.sh` 的 Compose 配置检查通过，但两次 `up -d --build` 均在拉取
 Docker Hub 的 `curlimages/curl:8.16.0` 或 `alpine:3.22` 时发生 TLS handshake timeout，未进入
 业务镜像构建和运行态验收。因此两实例、四实例、10,000 会话容量、Redis/RabbitMQ/数据库故障注入
 以及告警接收仍未完成验收；保持 `APP_TIMEOUT_SUBMISSION_V2_ENABLED=false`，不得据此宣称已达成

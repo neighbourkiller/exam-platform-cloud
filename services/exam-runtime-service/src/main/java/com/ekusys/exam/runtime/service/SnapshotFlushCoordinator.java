@@ -173,7 +173,7 @@ public class SnapshotFlushCoordinator {
      * 清理任务：删除多次重试仍然失败的已隔离快照条目。
      *
      * <p>被隔离的条目已无法自动恢复，此方法将其从 Redis 中移除以释放空间。
-     * 运维人员需根据 {@code deploy/SNAPSHOT_FLUSH_OPERATIONS.md} 进行人工排查。</p>
+     * 运维人员需根据 {@code deploy/runbooks/SNAPSHOT_FLUSH_OPERATIONS.md} 进行人工排查。</p>
      *
      * @return 本次清理删除的条目数量
      */

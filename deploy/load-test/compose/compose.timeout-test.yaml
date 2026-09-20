@@ -10,7 +10,7 @@ services:
 
   runtime-service:
     build:
-      dockerfile: deploy/load-test/Dockerfile.runtime-local
+      dockerfile: deploy/load-test/compose/Dockerfile.runtime-local
       network: host
     restart: "no"
     environment:

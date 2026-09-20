@@ -8,13 +8,14 @@ set -Eeuo pipefail
 # 环境变量: EXAM_ID(必填) USERS DUE_SECONDS(默认120) BUILD_RUNTIME_IMAGE(默认false) PAUSE_*_OFFSET_* 等
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOAD_TEST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$LOAD_TEST_ROOT/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env.microservices}"
 COMPOSE_PROJECT="exam-platform-cloud-timeout"
 source "$SCRIPT_DIR/process-lifecycle.sh"
 umask 077
 COMPOSE_BASE=(docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT"
-  -f "$PROJECT_ROOT/docker-compose.yml" -f "$SCRIPT_DIR/compose.timeout-test.yaml")
+  -f "$PROJECT_ROOT/docker-compose.yml" -f "$LOAD_TEST_ROOT/compose/compose.timeout-test.yaml")
 
 FAULT_TYPE="${1:?用法: run-timeout-fault-drill.sh <redis|mysql|rabbitmq|xxljob> <场景名> <副本数> <工作线程> <maxconn>}"
 SCENARIO="${2:?缺少场景名}"
@@ -25,7 +26,7 @@ USERS="${USERS:-10000}"
 EXAM_ID="${EXAM_ID:?EXAM_ID is required}"
 DUE_SECONDS="${DUE_SECONDS:-120}"
 
-mkdir -p "$SCRIPT_DIR/results"
+mkdir -p "$LOAD_TEST_ROOT/results"
 
 RESULT_DIR=""
 SUITE_PID=""
@@ -44,7 +45,7 @@ case "$FAULT_TYPE" in
   *) echo "未知故障类型: $FAULT_TYPE" >&2; exit 2 ;;
 esac
 
-DRILL_LOG="$SCRIPT_DIR/results/drill-$(date +%Y%m%d_%H%M%S)-$SCENARIO.log"
+DRILL_LOG="$LOAD_TEST_ROOT/results/drill-$(date +%Y%m%d_%H%M%S)-$SCENARIO.log"
 exec > >(tee "$DRILL_LOG") 2>&1
 
 mysql_exec() { "${COMPOSE_BASE[@]}" exec -T mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N "$@"' _ "$@"; }
@@ -58,7 +59,7 @@ find_result_dir() {
       return 0
     fi
   done < <(
-    find "$SCRIPT_DIR/results" -mindepth 1 -maxdepth 1 -type d \
+    find "$LOAD_TEST_ROOT/results" -mindepth 1 -maxdepth 1 -type d \
       -name "*-$SCENARIO" -printf '%T@ %p\n' 2>/dev/null \
       | sort -nr | cut -d' ' -f2-
   )

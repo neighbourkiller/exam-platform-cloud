@@ -7,7 +7,7 @@
 - 单活答题的权威约束是 Runtime 服务端客户端租约。浏览器锁、页面状态或 `BroadcastChannel` 只改善体验，不能替代服务端校验。
 - 修改开考、心跳、保存答案或交卷链路时，必须保持租约令牌和服务端状态校验，不能仅依赖前端阻止冲突。
 - 快照使用 Redis 快路径与 MySQL 持久化兜底，并受快照版本和租约保护；不得绕过版本判断直接覆盖较新数据。
-- 涉及快照落库、积压、重试或恢复时，先阅读 [`../../deploy/SNAPSHOT_FLUSH_OPERATIONS.md`](../../deploy/SNAPSHOT_FLUSH_OPERATIONS.md)，并区分 Redis 状态、MySQL 状态和队列状态。
+- 涉及快照落库、积压、重试或恢复时，先阅读 [`../../deploy/runbooks/SNAPSHOT_FLUSH_OPERATIONS.md`](../../deploy/runbooks/SNAPSHOT_FLUSH_OPERATIONS.md)，并区分 Redis 状态、MySQL 状态和队列状态。
 
 ## 调度与可靠性
 
